@@ -1,0 +1,2902 @@
+diff --git a/deps/boost/CMakeLists.txt b/deps/boost/CMakeLists.txt
+index db4ef4ef5..3cf5d466b 100644
+--- a/deps/boost/CMakeLists.txt
++++ b/deps/boost/CMakeLists.txt
+@@ -32,7 +32,7 @@ else()
+   set(BOOST_REQUIRED_VERSION 1.67)
+ endif()
+ 
+-find_package(Boost ${BOOST_REQUIRED_VERSION} REQUIRED system filesystem program_options iostreams regex)
++find_package(Boost ${BOOST_REQUIRED_VERSION} REQUIRED system filesystem program_options iostreams regex thread)
+ 
+ if(NOT Boost_FOUND)
+   if(NOT DEFINED ENV{BOOST_ROOT} AND NOT DEFINED Boost_DIR AND NOT DEFINED BOOST_ROOT AND NOT DEFINED BOOSTROOT)
+diff --git a/modules/CMakeLists.txt b/modules/CMakeLists.txt
+index afdfe2c5a..23a154bee 100644
+--- a/modules/CMakeLists.txt
++++ b/modules/CMakeLists.txt
+@@ -37,6 +37,7 @@ set("AC_MODULE_LIST" "")
+ set("AC_SCRIPTS_LIST" "")
+ set(MOD_ELUNA_FOUND 0)
+ set(MOD_ELUNA_PATH "")
++set(MOD_PLAYERBOTS_FOUND 0)
+ 
+ foreach(include ${AC_ADD_SCRIPTS_INCLUDE})
+   set("AC_SCRIPTS_INCLUDES" "#include \"${include}\"\n${AC_SCRIPTS_INCLUDES}")
+@@ -81,6 +82,16 @@ foreach(SOURCE_MODULE ${MODULES_MODULE_LIST})
+     ConfigureElunaModule(${SOURCE_MODULE})
+   endif()
+ 
++  if (SOURCE_MODULE MATCHES "mod-playerbots")
++    set(MOD_PLAYERBOTS_FOUND 1)
++    target_compile_options(database
++      PRIVATE
++        -DMOD_PLAYERBOTS)
++    target_compile_options(game-interface
++      INTERFACE
++        -DMOD_PLAYERBOTS)
++  endif()
++
+   # Build the Graph values
+   if(${MODULE_MODULE_VARIABLE} MATCHES "dynamic")
+     GetProjectNameOfModuleName(${SOURCE_MODULE} MODULE_SOURCE_PROJECT_NAME)
+@@ -280,6 +291,7 @@ add_library(modules STATIC
+ target_link_libraries(modules
+   PRIVATE
+     acore-core-interface
++    mysql
+   PUBLIC
+     game-interface)
+ 
+@@ -353,6 +365,12 @@ target_compile_options(modules
+   INTERFACE
+     -DCONFIG_FILE_LIST=$<1:"${CONFIG_LIST}">)
+ 
++if (MOD_PLAYERBOTS_FOUND)
++  target_compile_options(modules
++      PRIVATE
++        -DMOD_PLAYERBOTS)
++endif()
++
+ if (MOD_ELUNA_FOUND)
+   if (APPLE)
+     target_compile_definitions(modules
+diff --git a/src/common/Collision/Management/MMapMgr.cpp b/src/common/Collision/Management/MMapMgr.cpp
+index e1e64ac9f..315b446fb 100644
+--- a/src/common/Collision/Management/MMapMgr.cpp
++++ b/src/common/Collision/Management/MMapMgr.cpp
+@@ -141,7 +141,8 @@ namespace MMAP
+         uint32 packedGridPos = packTileID(x, y);
+         if (mmap->loadedTileRefs.find(packedGridPos) != mmap->loadedTileRefs.end())
+         {
+-            LOG_ERROR("maps", "MMAP:loadMap: Asked to load already loaded navmesh tile. {:03}{:02}{:02}.mmtile", mapId, x, y);
++            // Peiru: Commented out for now because Playerbots system uses this method to load or check loaded maps and will spam logs
++//            LOG_ERROR("maps", "MMAP:loadMap: Asked to load already loaded navmesh tile. {:03}{:02}{:02}.mmtile", mapId, x, y);
+             return false;
+         }
+ 
+diff --git a/src/common/Utilities/Util.h b/src/common/Utilities/Util.h
+index 3648c850d..f00c06930 100644
+--- a/src/common/Utilities/Util.h
++++ b/src/common/Utilities/Util.h
+@@ -351,6 +351,7 @@ inline wchar_t wcharToLower(wchar_t wchar)
+ 
+ void wstrToUpper(std::wstring& str);
+ void wstrToLower(std::wstring& str);
++void strToLower(std::string& str);
+ 
+ std::wstring GetMainPartOfName(std::wstring const& wname, uint32 declension);
+ 
+diff --git a/src/server/apps/worldserver/Main.cpp b/src/server/apps/worldserver/Main.cpp
+index 7578a2af7..b53f99387 100644
+--- a/src/server/apps/worldserver/Main.cpp
++++ b/src/server/apps/worldserver/Main.cpp
+@@ -252,6 +252,7 @@ int main(int argc, char** argv)
+         METRIC_VALUE("db_queue_login", uint64(LoginDatabase.QueueSize()));
+         METRIC_VALUE("db_queue_character", uint64(CharacterDatabase.QueueSize()));
+         METRIC_VALUE("db_queue_world", uint64(WorldDatabase.QueueSize()));
++        sScriptMgr->OnMetricLogging();
+     });
+ 
+     METRIC_EVENT("events", "Worldserver started", "");
+@@ -403,6 +404,11 @@ bool StartDB()
+     if (!loader.Load())
+         return false;
+ 
++    if (!sScriptMgr->OnDatabasesLoading())
++    {
++        return false;
++    }
++
+     ///- Get the realm Id from the configuration file
+     realm.Id.Realm = sConfigMgr->GetOption<uint32>("RealmID", 0);
+     if (!realm.Id.Realm)
+@@ -445,6 +451,8 @@ void StopDB()
+     WorldDatabase.Close();
+     LoginDatabase.Close();
+ 
++    sScriptMgr->OnDatabasesClosing();
++
+     MySQL::Library_End();
+ }
+ 
+@@ -529,6 +537,8 @@ void WorldUpdateLoop()
+     CharacterDatabase.WarnAboutSyncQueries(true);
+     WorldDatabase.WarnAboutSyncQueries(true);
+ 
++    sScriptMgr->OnDatabaseWarnAboutSyncQueries(true);
++
+     ///- While we have not World::m_stopEvent, update the world
+     while (!World::IsStopped())
+     {
+@@ -557,6 +567,8 @@ void WorldUpdateLoop()
+ #endif
+     }
+ 
++    sScriptMgr->OnDatabaseWarnAboutSyncQueries(false);
++
+     LoginDatabase.WarnAboutSyncQueries(false);
+     CharacterDatabase.WarnAboutSyncQueries(false);
+     WorldDatabase.WarnAboutSyncQueries(false);
+diff --git a/src/server/database/Database/DatabaseEnv.cpp b/src/server/database/Database/DatabaseEnv.cpp
+index e6bf6b082..303a05329 100644
+--- a/src/server/database/Database/DatabaseEnv.cpp
++++ b/src/server/database/Database/DatabaseEnv.cpp
+@@ -20,3 +20,7 @@
+ DatabaseWorkerPool<WorldDatabaseConnection> WorldDatabase;
+ DatabaseWorkerPool<CharacterDatabaseConnection> CharacterDatabase;
+ DatabaseWorkerPool<LoginDatabaseConnection> LoginDatabase;
++
++#ifdef MOD_PLAYERBOTS
++DatabaseWorkerPool<PlayerbotsDatabaseConnection> PlayerbotsDatabase;
++#endif
+diff --git a/src/server/database/Database/DatabaseEnv.h b/src/server/database/Database/DatabaseEnv.h
+index eec79f004..a7bc68ee3 100644
+--- a/src/server/database/Database/DatabaseEnv.h
++++ b/src/server/database/Database/DatabaseEnv.h
+@@ -25,6 +25,10 @@
+ #include "Implementation/LoginDatabase.h"
+ #include "Implementation/WorldDatabase.h"
+ 
++#ifdef MOD_PLAYERBOTS
++#include "Implementation/PlayerbotsDatabase.h"
++#endif
++
+ #include "Field.h"
+ #include "PreparedStatement.h"
+ #include "QueryCallback.h"
+@@ -38,4 +42,9 @@ AC_DATABASE_API extern DatabaseWorkerPool<CharacterDatabaseConnection> Character
+ /// Accessor to the realm/login database
+ AC_DATABASE_API extern DatabaseWorkerPool<LoginDatabaseConnection> LoginDatabase;
+ 
++#ifdef MOD_PLAYERBOTS
++/// Accessor to the playerbots database
++AC_DATABASE_API extern DatabaseWorkerPool<PlayerbotsDatabaseConnection> PlayerbotsDatabase;
++#endif
++
+ #endif
+diff --git a/src/server/database/Database/DatabaseEnvFwd.h b/src/server/database/Database/DatabaseEnvFwd.h
+index 34a590c45..94fe14405 100644
+--- a/src/server/database/Database/DatabaseEnvFwd.h
++++ b/src/server/database/Database/DatabaseEnvFwd.h
+@@ -33,6 +33,10 @@ class CharacterDatabaseConnection;
+ class LoginDatabaseConnection;
+ class WorldDatabaseConnection;
+ 
++#ifdef MOD_PLAYERBOTS
++class PlayerbotsDatabaseConnection;
++#endif
++
+ class PreparedStatementBase;
+ 
+ template<typename T>
+@@ -42,6 +46,10 @@ using CharacterDatabasePreparedStatement = PreparedStatement<CharacterDatabaseCo
+ using LoginDatabasePreparedStatement = PreparedStatement<LoginDatabaseConnection>;
+ using WorldDatabasePreparedStatement = PreparedStatement<WorldDatabaseConnection>;
+ 
++#ifdef MOD_PLAYERBOTS
++using PlayerbotsDatabasePreparedStatement = PreparedStatement<PlayerbotsDatabaseConnection>;
++#endif
++
+ class PreparedResultSet;
+ using PreparedQueryResult = std::shared_ptr<PreparedResultSet>;
+ using PreparedQueryResultFuture = std::future<PreparedQueryResult>;
+@@ -71,6 +79,10 @@ using CharacterDatabaseTransaction = SQLTransaction<CharacterDatabaseConnection>
+ using LoginDatabaseTransaction = SQLTransaction<LoginDatabaseConnection>;
+ using WorldDatabaseTransaction = SQLTransaction<WorldDatabaseConnection>;
+ 
++#ifdef MOD_PLAYERBOTS
++using PlayerbotsDatabaseTransaction = SQLTransaction<PlayerbotsDatabaseConnection>;
++#endif
++
+ class SQLQueryHolderBase;
+ using QueryResultHolderFuture = std::future<void>;
+ using QueryResultHolderPromise = std::promise<void>;
+@@ -82,6 +94,10 @@ using CharacterDatabaseQueryHolder = SQLQueryHolder<CharacterDatabaseConnection>
+ using LoginDatabaseQueryHolder = SQLQueryHolder<LoginDatabaseConnection>;
+ using WorldDatabaseQueryHolder = SQLQueryHolder<WorldDatabaseConnection>;
+ 
++#ifdef MOD_PLAYERBOTS
++using PlayerbotsDatabaseQueryHolder = SQLQueryHolder<PlayerbotsDatabaseConnection>;
++#endif
++
+ class SQLQueryHolderCallback;
+ 
+ // mysql
+diff --git a/src/server/database/Database/DatabaseLoader.cpp b/src/server/database/Database/DatabaseLoader.cpp
+index cfd0d6f0f..a9f0bfcb8 100644
+--- a/src/server/database/Database/DatabaseLoader.cpp
++++ b/src/server/database/Database/DatabaseLoader.cpp
+@@ -219,3 +219,8 @@ template AC_DATABASE_API
+ DatabaseLoader& DatabaseLoader::AddDatabase<CharacterDatabaseConnection>(DatabaseWorkerPool<CharacterDatabaseConnection>&, std::string const&);
+ template AC_DATABASE_API
+ DatabaseLoader& DatabaseLoader::AddDatabase<WorldDatabaseConnection>(DatabaseWorkerPool<WorldDatabaseConnection>&, std::string const&);
++
++#ifdef MOD_PLAYERBOTS
++template AC_DATABASE_API
++DatabaseLoader& DatabaseLoader::AddDatabase<PlayerbotsDatabaseConnection>(DatabaseWorkerPool<PlayerbotsDatabaseConnection>&, std::string const&);
++#endif
+diff --git a/src/server/database/Database/DatabaseLoader.h b/src/server/database/Database/DatabaseLoader.h
+index 44aaca199..094b13cf4 100644
+--- a/src/server/database/Database/DatabaseLoader.h
++++ b/src/server/database/Database/DatabaseLoader.h
+@@ -48,8 +48,12 @@ public:
+         DATABASE_LOGIN      = 1,
+         DATABASE_CHARACTER  = 2,
+         DATABASE_WORLD      = 4,
+-
++#ifdef MOD_PLAYERBOTS
++        DATABASE_PLAYERBOTS = 8,
++        DATABASE_MASK_ALL   = DATABASE_LOGIN | DATABASE_CHARACTER | DATABASE_WORLD | DATABASE_PLAYERBOTS
++#else
+         DATABASE_MASK_ALL   = DATABASE_LOGIN | DATABASE_CHARACTER | DATABASE_WORLD
++#endif
+     };
+ 
+     [[nodiscard]] uint32 GetUpdateFlags() const
+@@ -57,6 +61,11 @@ public:
+         return _updateFlags;
+     }
+ 
++    void SetUpdateFlags(uint32 newUpdateFlags)
++    {
++        _updateFlags |= newUpdateFlags;
++    }
++
+ private:
+     bool OpenDatabases();
+     bool PopulateDatabases();
+@@ -73,7 +82,7 @@ private:
+     std::string const _logger;
+     std::string_view _modulesList;
+     bool const _autoSetup;
+-    uint32 const _updateFlags;
++    uint32 _updateFlags;
+ 
+     std::queue<Predicate> _open, _populate, _update, _prepare;
+     std::stack<Closer> _close;
+diff --git a/src/server/database/Database/DatabaseWorkerPool.cpp b/src/server/database/Database/DatabaseWorkerPool.cpp
+index 5a391e0cd..d36d8a13c 100644
+--- a/src/server/database/Database/DatabaseWorkerPool.cpp
++++ b/src/server/database/Database/DatabaseWorkerPool.cpp
+@@ -39,6 +39,10 @@
+ #include <sstream>
+ #endif
+ 
++#ifdef MOD_PLAYERBOTS
++#include "Implementation/PlayerbotsDatabase.h"
++#endif
++
+ #if MARIADB_VERSION_ID >= 100600
+ #define MIN_MYSQL_SERVER_VERSION 100500u
+ #define MIN_MYSQL_CLIENT_VERSION 30203u
+@@ -531,3 +535,7 @@ void DatabaseWorkerPool<T>::ExecuteOrAppend(SQLTransaction<T>& trans, PreparedSt
+ template class AC_DATABASE_API DatabaseWorkerPool<LoginDatabaseConnection>;
+ template class AC_DATABASE_API DatabaseWorkerPool<WorldDatabaseConnection>;
+ template class AC_DATABASE_API DatabaseWorkerPool<CharacterDatabaseConnection>;
++
++#ifdef MOD_PLAYERBOTS
++template class AC_DATABASE_API DatabaseWorkerPool<PlayerbotsDatabaseConnection>;
++#endif
+diff --git a/src/server/database/Database/Implementation/LoginDatabase.cpp b/src/server/database/Database/Implementation/LoginDatabase.cpp
+index 5a393a3cc..ddf59dad2 100644
+--- a/src/server/database/Database/Implementation/LoginDatabase.cpp
++++ b/src/server/database/Database/Implementation/LoginDatabase.cpp
+@@ -75,6 +75,7 @@ void LoginDatabaseConnection::DoPrepareStatements()
+     PrepareStatement(LOGIN_DEL_IP_NOT_BANNED, "DELETE FROM ip_banned WHERE ip = ?", CONNECTION_ASYNC);
+     PrepareStatement(LOGIN_INS_ACCOUNT_BANNED, "INSERT INTO account_banned VALUES (?, UNIX_TIMESTAMP(), UNIX_TIMESTAMP()+?, ?, ?, 1)", CONNECTION_ASYNC);
+     PrepareStatement(LOGIN_UPD_ACCOUNT_NOT_BANNED, "UPDATE account_banned SET active = 0 WHERE id = ? AND active != 0", CONNECTION_ASYNC);
++    PrepareStatement(LOGIN_DEL_REALM_CHARACTERS_BY_REALM, "DELETE FROM realmcharacters WHERE acctid = ? AND realmid = ?", CONNECTION_ASYNC);
+     PrepareStatement(LOGIN_DEL_REALM_CHARACTERS, "DELETE FROM realmcharacters WHERE acctid = ?", CONNECTION_ASYNC);
+     PrepareStatement(LOGIN_REP_REALM_CHARACTERS, "REPLACE INTO realmcharacters (numchars, acctid, realmid) VALUES (?, ?, ?)", CONNECTION_ASYNC);
+     PrepareStatement(LOGIN_SEL_SUM_REALM_CHARACTERS, "SELECT SUM(numchars) FROM realmcharacters WHERE acctid = ?", CONNECTION_ASYNC);
+@@ -88,7 +89,7 @@ void LoginDatabaseConnection::DoPrepareStatements()
+     PrepareStatement(LOGIN_UPD_MUTE_TIME_LOGIN, "UPDATE account SET mutetime = ? WHERE id = ?", CONNECTION_ASYNC);
+     PrepareStatement(LOGIN_UPD_LAST_IP, "UPDATE account SET last_ip = ? WHERE username = ?", CONNECTION_ASYNC);
+     PrepareStatement(LOGIN_UPD_LAST_ATTEMPT_IP, "UPDATE account SET last_attempt_ip = ? WHERE username = ?", CONNECTION_ASYNC);
+-    PrepareStatement(LOGIN_UPD_ACCOUNT_ONLINE, "UPDATE account SET online = ? WHERE id = ?", CONNECTION_ASYNC);
++    PrepareStatement(LOGIN_UPD_ACCOUNT_ONLINE, "UPDATE account SET online = 1 WHERE id = ?", CONNECTION_ASYNC);
+     PrepareStatement(LOGIN_UPD_UPTIME_PLAYERS, "UPDATE uptime SET uptime = ?, maxplayers = ? WHERE realmid = ? AND starttime = ?", CONNECTION_ASYNC);
+     PrepareStatement(LOGIN_DEL_OLD_LOGS, "DELETE FROM logs WHERE (time + ?) < ?", CONNECTION_ASYNC);
+     PrepareStatement(LOGIN_DEL_ACCOUNT_ACCESS, "DELETE FROM account_access WHERE id = ?", CONNECTION_ASYNC);
+diff --git a/src/server/database/Database/Implementation/LoginDatabase.h b/src/server/database/Database/Implementation/LoginDatabase.h
+index 3a9bb4a82..5872eddca 100644
+--- a/src/server/database/Database/Implementation/LoginDatabase.h
++++ b/src/server/database/Database/Implementation/LoginDatabase.h
+@@ -59,6 +59,7 @@ enum LoginDatabaseStatements : uint32
+     LOGIN_SEL_ACCOUNT_BY_ID,
+     LOGIN_INS_ACCOUNT_BANNED,
+     LOGIN_UPD_ACCOUNT_NOT_BANNED,
++    LOGIN_DEL_REALM_CHARACTERS_BY_REALM,
+     LOGIN_DEL_REALM_CHARACTERS,
+     LOGIN_REP_REALM_CHARACTERS,
+     LOGIN_SEL_SUM_REALM_CHARACTERS,
+diff --git a/src/server/database/Database/Implementation/PlayerbotsDatabase.cpp b/src/server/database/Database/Implementation/PlayerbotsDatabase.cpp
+new file mode 100644
+index 000000000..ddbd39f0a
+--- /dev/null
++++ b/src/server/database/Database/Implementation/PlayerbotsDatabase.cpp
+@@ -0,0 +1,129 @@
++/*
++ * This file is part of the AzerothCore Project. See AUTHORS file for Copyright information
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU Affero General Public License as published by the
++ * Free Software Foundation; either version 3 of the License, or (at your
++ * option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#ifdef MOD_PLAYERBOTS
++
++#include "PlayerbotsDatabase.h"
++#include "MySQLPreparedStatement.h"
++
++void PlayerbotsDatabaseConnection::DoPrepareStatements()
++{
++    if (!m_reconnecting)
++        m_stmts.resize(MAX_PLAYERBOTS_STATEMENTS);
++
++    PrepareStatement(PLAYERBOTS_SEL_CUSTOM_STRATEGY_BY_OWNER, "SELECT DISTINCT name FROM playerbots_custom_strategy WHERE owner = ?", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_SEL_CUSTOM_STRATEGY_BY_OWNER_AND_NAME, "SELECT idx, action_line FROM playerbots_custom_strategy WHERE owner = ? AND name = ? ORDER BY idx", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_SEL_CUSTOM_STRATEGY_BY_OWNER_AND_NAME_AND_IDX, "SELECT action_line FROM playerbots_custom_strategy WHERE owner = ? AND name = ? AND idx = ?", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_DEL_CUSTOM_STRATEGY, "DELETE FROM playerbots_custom_strategy WHERE name = ? AND owner = ? AND idx = ?", CONNECTION_ASYNC);
++    PrepareStatement(PLAYERBOTS_UPD_CUSTOM_STRATEGY, "UPDATE playerbots_custom_strategy SET action_line = ? WHERE name = ? AND owner = ? AND idx = ?", CONNECTION_ASYNC);
++    PrepareStatement(PLAYERBOTS_INS_CUSTOM_STRATEGY, "INSERT INTO playerbots_custom_strategy (name, owner, idx, action_line) VALUES (?, ?, ?, ?)", CONNECTION_ASYNC);
++
++    PrepareStatement(PLAYERBOTS_SEL_DB_STORE, "SELECT `key`,`value` FROM `playerbots_db_store` WHERE `guid` = ?", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_DEL_DB_STORE, "DELETE FROM `playerbots_db_store` WHERE `guid` = ?", CONNECTION_ASYNC);
++    PrepareStatement(PLAYERBOTS_INS_DB_STORE, "INSERT INTO `playerbots_db_store` (`guid`, `key`, `value`) VALUES (?, ?, ?)", CONNECTION_ASYNC);
++
++    PrepareStatement(PLAYERBOTS_SEL_ENCHANTS, "SELECT class, spec, spellid, slotid FROM playerbots_enchants", CONNECTION_SYNCH);
++
++    PrepareStatement(PLAYERBOTS_SEL_EQUIP_CACHE, "SELECT clazz, lvl, slot, quality, item FROM playerbots_equip_cache", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_INS_EQUIP_CACHE, "INSERT INTO playerbots_equip_cache (clazz, lvl, slot, quality, item) VALUES (?, ?, ?, ?, ?)", CONNECTION_ASYNC);
++
++    PrepareStatement(PLAYERBOTS_SEL_GUILD_TASKS_BY_VALUE, "SELECT `value`, `time`, validIn FROM playerbots_guild_tasks WHERE `value` = ? AND guildid = ? AND `type` = ?", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_SEL_GUILD_TASKS_BY_OWNER, "SELECT `value`, `time`, validIn, guildid FROM playerbots_guild_tasks WHERE owner = ? AND `type` = ?", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_SEL_GUILD_TASKS_BY_OWNER_AND_TYPE, "SELECT `value`, `time`, validIn FROM playerbots_guild_tasks WHERE owner = ? AND guildid = ? AND `type` = ?", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_SEL_GUILD_TASKS_BY_OWNER_DISTINCT, "SELECT DISTINCT guildid FROM playerbots_guild_tasks WHERE owner = ?", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_SEL_GUILD_TASKS_BY_OWNER_ORDERED, "SELECT `value`, `time`, validIn, guildid FROM playerbots_guild_tasks WHERE owner = ? AND type = ? ORDER BY guildid", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_DEL_GUILD_TASKS, "DELETE FROM playerbots_guild_tasks WHERE owner = ? AND guildid = ? AND `type` = ?", CONNECTION_ASYNC);
++    PrepareStatement(PLAYERBOTS_INS_GUILD_TASKS, "INSERT INTO playerbots_guild_tasks (owner, guildid, `time`, validIn, `type`, `value`) VALUES (?, ?, ?, ?, ?, ?)", CONNECTION_ASYNC);
++
++    PrepareStatement(PLAYERBOTS_SEL_RANDOM_BOTS_VALUE, "SELECT value FROM playerbots_random_bots WHERE event = ?", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_SEL_RANDOM_BOTS_BOT, "SELECT `bot` FROM playerbots_random_bots WHERE event = ?", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_SEL_RANDOM_BOTS_BY_OWNER_AND_EVENT, "SELECT bot FROM playerbots_random_bots WHERE owner = ? AND event = ?", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_SEL_RANDOM_BOTS_BY_OWNER_AND_BOT, "SELECT `event`, `value`, `time`, validIn, `data` FROM playerbots_random_bots WHERE owner = ? AND bot = ?", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_SEL_RANDOM_BOTS_BY_EVENT_AND_VALUE, "SELECT bot FROM playerbots_random_bots WHERE event = ? AND value = ?", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_INS_RANDOM_BOTS, "INSERT INTO playerbots_random_bots (owner, bot, `time`, validIn, event, `value`, `data`) VALUES (?, ?, ?, ?, ?, ?, ?)", CONNECTION_ASYNC);
++    PrepareStatement(PLAYERBOTS_DEL_RANDOM_BOTS, "DELETE FROM playerbots_random_bots", CONNECTION_ASYNC);
++    PrepareStatement(PLAYERBOTS_DEL_RANDOM_BOTS_BY_OWNER, "DELETE FROM playerbots_random_bots WHERE owner = ? AND bot = ?", CONNECTION_ASYNC);
++    PrepareStatement(PLAYERBOTS_DEL_RANDOM_BOTS_BY_OWNER_AND_EVENT, "DELETE FROM playerbots_random_bots WHERE owner = ? AND bot = ? AND event = ?", CONNECTION_ASYNC);
++    PrepareStatement(PLAYERBOTS_UPD_RANDOM_BOTS, "UPDATE playerbots_random_bots SET validIn = ? WHERE event = ? AND bot = ?", CONNECTION_ASYNC);
++
++    PrepareStatement(PLAYERBOTS_SEL_RARITY_CACHE, "SELECT item, rarity FROM playerbots_rarity_cache", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_INS_RARITY_CACHE, "INSERT INTO playerbots_rarity_cache (item, rarity) VALUES (?, ?)", CONNECTION_ASYNC);
++
++    PrepareStatement(PLAYERBOTS_SEL_RNDITEM_CACHE, "SELECT lvl, type, item FROM playerbots_rnditem_cache", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_INS_RNDITEM_CACHE, "INSERT INTO playerbots_rnditem_cache (lvl, type, item) VALUES (?, ?, ?)", CONNECTION_ASYNC);
++
++    PrepareStatement(PLAYERBOTS_SEL_SPEECH, "SELECT name, text, type FROM playerbots_speech", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_SEL_SPEECH_PROBABILITY, "SELECT name, probability FROM playerbots_speech_probability", CONNECTION_SYNCH);
++
++    PrepareStatement(PLAYERBOTS_SEL_TELE_CACHE, "SELECT map_id, x, y, z, level FROM playerbots_tele_cache", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_INS_TELE_CACHE, "INSERT INTO playerbots_tele_cache (level, map_id, x, y, z) VALUES (?, ?, ?, ?, ?)", CONNECTION_ASYNC);
++
++    PrepareStatement(PLAYERBOTS_SEL_TRAVELNODE, "SELECT id, name, map_id, x, y, z, linked FROM playerbots_travelnode", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_INS_TRAVELNODE, "INSERT INTO `playerbots_travelnode` (`id`, `name`, `map_id`, `x`, `y`, `z`, `linked`) VALUES (?, ?, ?, ?, ?, ?, ?)", CONNECTION_ASYNC);
++    PrepareStatement(PLAYERBOTS_DEL_TRAVELNODE, "DELETE FROM playerbots_travelnode", CONNECTION_ASYNC);
++
++    PrepareStatement(PLAYERBOTS_SEL_TRAVELNODE_LINK, "SELECT node_id, to_node_id,type,object,distance,swim_distance, extra_cost,calculated, max_creature_0,max_creature_1,max_creature_2 FROM playerbots_travelnode_link", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_INS_TRAVELNODE_LINK, "INSERT INTO `playerbots_travelnode_link` (`node_id`, `to_node_id`,`type`,`object`,`distance`,`swim_distance`, `extra_cost`,`calculated`, `max_creature_0`,`max_creature_1`,`max_creature_2`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", CONNECTION_ASYNC);
++    PrepareStatement(PLAYERBOTS_DEL_TRAVELNODE_LINK, "DELETE FROM playerbots_travelnode_link", CONNECTION_ASYNC);
++
++    PrepareStatement(PLAYERBOTS_SEL_TRAVELNODE_PATH, "SELECT node_id, to_node_id, nr, map_id, x, y, z FROM playerbots_travelnode_path order by node_id, to_node_id, nr", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_INS_TRAVELNODE_PATH, "INSERT INTO `playerbots_travelnode_path` (`node_id`, `to_node_id`, `nr`, `map_id`, `x`, `y`, `z`) VALUES (?, ?, ?, ?, ?, ?, ?)", CONNECTION_ASYNC);
++    PrepareStatement(PLAYERBOTS_DEL_TRAVELNODE_PATH, "DELETE FROM playerbots_travelnode_path", CONNECTION_ASYNC);
++
++    PrepareStatement(PLAYERBOTS_SEL_TEXT, "SELECT `name`, `text`, `say_type`, `reply_type`, `text_loc1`, `text_loc2`, `text_loc3`, `text_loc4`, `text_loc5`, `text_loc6`, `text_loc7`, `text_loc8` FROM `ai_playerbot_texts`", CONNECTION_SYNCH);
++    PrepareStatement(
++        PLAYERBOTS_SEL_DUNGEON_SUGGESTION,
++        "SELECT"
++        "   d.`name`, "
++        "   d.`difficulty`, "
++        "   d.`min_level`, "
++        "   d.`max_level`, "
++        "   a.`abbrevation`, "
++        "   s.`strategy` "
++        "FROM playerbots_dungeon_suggestion_definition d "
++        "LEFT OUTER JOIN playerbots_dungeon_suggestion_abbrevation a "
++        "   ON d.slug = a.definition_slug "
++        "LEFT OUTER JOIN playerbots_dungeon_suggestion_strategy s "
++        "   ON d.slug = s.definition_slug "
++        "   AND d.difficulty = s.difficulty "
++        "WHERE d.expansion <= ?;",
++        CONNECTION_SYNCH
++    );
++
++    PrepareStatement(PLAYERBOTS_SEL_WEIGHTSCALES, "SELECT id, name, class FROM playerbots_weightscales", CONNECTION_SYNCH);
++    PrepareStatement(PLAYERBOTS_SEL_WEIGHTSCALE_DATA, "SELECT id, field, val FROM playerbots_weightscale_data", CONNECTION_SYNCH);
++
++    PrepareStatement(PLAYERBOTS_INS_EQUIP_CACHE_NEW, "INSERT INTO playerbots_item_info_cache (id, quality, slot, source, sourceId, team, faction, factionRepRank, minLevel, "
++            "scale_1, scale_2, scale_3, scale_4, scale_5, scale_6, scale_7, scale_8, scale_9, scale_10, scale_11, scale_12, scale_13, scale_14, scale_15, "
++            "scale_16, scale_17, scale_18, scale_19, scale_20, scale_21, scale_22, scale_23, scale_24, scale_25, scale_26, scale_27, scale_28, scale_29, scale_30, scale_31, scale_32) "
++            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", CONNECTION_ASYNC);
++    PrepareStatement(PLAYERBOTS_DEL_EQUIP_CACHE_NEW, "DELETE FROM playerbots_item_info_cache WHERE id = ?", CONNECTION_ASYNC);
++}
++
++PlayerbotsDatabaseConnection::PlayerbotsDatabaseConnection(MySQLConnectionInfo& connInfo) : MySQLConnection(connInfo)
++{
++}
++
++PlayerbotsDatabaseConnection::PlayerbotsDatabaseConnection(ProducerConsumerQueue<SQLOperation*>* q, MySQLConnectionInfo& connInfo) : MySQLConnection(q, connInfo)
++{
++}
++
++PlayerbotsDatabaseConnection::~PlayerbotsDatabaseConnection()
++{
++}
++
++#endif
+diff --git a/src/server/database/Database/Implementation/PlayerbotsDatabase.h b/src/server/database/Database/Implementation/PlayerbotsDatabase.h
+new file mode 100644
+index 000000000..2f33f8f90
+--- /dev/null
++++ b/src/server/database/Database/Implementation/PlayerbotsDatabase.h
+@@ -0,0 +1,120 @@
++/*
++ * This file is part of the AzerothCore Project. See AUTHORS file for Copyright information
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU Affero General Public License as published by the
++ * Free Software Foundation; either version 3 of the License, or (at your
++ * option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#ifdef MOD_PLAYERBOTS
++
++#ifndef _PlayerbotsDatabase_H
++#define _PlayerbotsDatabase_H
++
++#include "MySQLConnection.h"
++
++enum PlayerbotsDatabaseStatements : uint32
++{
++    /*  Naming standard for defines:
++        {DB}_{SEL/INS/UPD/DEL/REP}_{Summary of data changed}
++        When updating more than one field, consider looking at the calling function
++        name for a suiting suffix.
++    */
++
++    PLAYERBOTS_SEL_CUSTOM_STRATEGY_BY_OWNER,
++    PLAYERBOTS_SEL_CUSTOM_STRATEGY_BY_OWNER_AND_NAME,
++    PLAYERBOTS_SEL_CUSTOM_STRATEGY_BY_OWNER_AND_NAME_AND_IDX,
++    PLAYERBOTS_DEL_CUSTOM_STRATEGY,
++    PLAYERBOTS_UPD_CUSTOM_STRATEGY,
++    PLAYERBOTS_INS_CUSTOM_STRATEGY,
++
++    PLAYERBOTS_SEL_DB_STORE,
++    PLAYERBOTS_DEL_DB_STORE,
++    PLAYERBOTS_INS_DB_STORE,
++
++    PLAYERBOTS_SEL_ENCHANTS,
++
++    PLAYERBOTS_SEL_EQUIP_CACHE,
++    PLAYERBOTS_INS_EQUIP_CACHE,
++
++    PLAYERBOTS_SEL_GUILD_TASKS_BY_VALUE,
++    PLAYERBOTS_SEL_GUILD_TASKS_BY_OWNER,
++    PLAYERBOTS_SEL_GUILD_TASKS_BY_OWNER_AND_TYPE,
++    PLAYERBOTS_SEL_GUILD_TASKS_BY_OWNER_DISTINCT,
++    PLAYERBOTS_SEL_GUILD_TASKS_BY_OWNER_ORDERED,
++    PLAYERBOTS_DEL_GUILD_TASKS,
++    PLAYERBOTS_INS_GUILD_TASKS,
++
++    PLAYERBOTS_SEL_RANDOM_BOTS_VALUE,
++    PLAYERBOTS_SEL_RANDOM_BOTS_BOT,
++    PLAYERBOTS_SEL_RANDOM_BOTS_BY_OWNER_AND_EVENT,
++    PLAYERBOTS_SEL_RANDOM_BOTS_BY_OWNER_AND_BOT,
++    PLAYERBOTS_SEL_RANDOM_BOTS_BY_EVENT_AND_VALUE,
++    PLAYERBOTS_INS_RANDOM_BOTS,
++    PLAYERBOTS_DEL_RANDOM_BOTS,
++    PLAYERBOTS_DEL_RANDOM_BOTS_BY_OWNER,
++    PLAYERBOTS_DEL_RANDOM_BOTS_BY_OWNER_AND_EVENT,
++    PLAYERBOTS_UPD_RANDOM_BOTS,
++
++    PLAYERBOTS_SEL_RARITY_CACHE,
++    PLAYERBOTS_INS_RARITY_CACHE,
++
++    PLAYERBOTS_SEL_RNDITEM_CACHE,
++    PLAYERBOTS_INS_RNDITEM_CACHE,
++
++    PLAYERBOTS_SEL_SPEECH,
++    PLAYERBOTS_SEL_SPEECH_PROBABILITY,
++
++    PLAYERBOTS_SEL_TELE_CACHE,
++    PLAYERBOTS_INS_TELE_CACHE,
++
++    PLAYERBOTS_SEL_TEXT,
++    PLAYERBOTS_SEL_DUNGEON_SUGGESTION,
++
++    PLAYERBOTS_SEL_TRAVELNODE,
++    PLAYERBOTS_INS_TRAVELNODE,
++    PLAYERBOTS_DEL_TRAVELNODE,
++
++    PLAYERBOTS_SEL_TRAVELNODE_LINK,
++    PLAYERBOTS_INS_TRAVELNODE_LINK,
++    PLAYERBOTS_DEL_TRAVELNODE_LINK,
++
++    PLAYERBOTS_SEL_TRAVELNODE_PATH,
++    PLAYERBOTS_INS_TRAVELNODE_PATH,
++    PLAYERBOTS_DEL_TRAVELNODE_PATH,
++
++    PLAYERBOTS_SEL_WEIGHTSCALES,
++    PLAYERBOTS_SEL_WEIGHTSCALE_DATA,
++
++    PLAYERBOTS_INS_EQUIP_CACHE_NEW,
++    PLAYERBOTS_DEL_EQUIP_CACHE_NEW,
++
++    MAX_PLAYERBOTS_STATEMENTS
++};
++
++class AC_DATABASE_API PlayerbotsDatabaseConnection : public MySQLConnection
++{
++public:
++    typedef PlayerbotsDatabaseStatements Statements;
++
++    //- Constructors for sync and async connections
++    PlayerbotsDatabaseConnection(MySQLConnectionInfo& connInfo);
++    PlayerbotsDatabaseConnection(ProducerConsumerQueue<SQLOperation*>* q, MySQLConnectionInfo& connInfo);
++    ~PlayerbotsDatabaseConnection();
++
++    //- Loads database type specific prepared statements
++    void DoPrepareStatements() override;
++};
++
++#endif
++
++#endif
+diff --git a/src/server/database/Updater/DBUpdater.cpp b/src/server/database/Updater/DBUpdater.cpp
+index 95371d895..d4a3e6f99 100644
+--- a/src/server/database/Updater/DBUpdater.cpp
++++ b/src/server/database/Updater/DBUpdater.cpp
+@@ -77,10 +77,16 @@ std::string DBUpdater<LoginDatabaseConnection>::GetTableName()
+     return "Auth";
+ }
+ 
++template<>
++std::string DBUpdater<LoginDatabaseConnection>::GetSourceDirectory()
++{
++    return BuiltInConfig::GetSourceDirectory();
++}
++
+ template<>
+ std::string DBUpdater<LoginDatabaseConnection>::GetBaseFilesDirectory()
+ {
+-    return BuiltInConfig::GetSourceDirectory() + "/data/sql/base/db_auth/";
++    return DBUpdater<LoginDatabaseConnection>::GetSourceDirectory() + "/data/sql/base/db_auth/";
+ }
+ 
+ template<>
+@@ -93,7 +99,7 @@ bool DBUpdater<LoginDatabaseConnection>::IsEnabled(uint32 const updateMask)
+ template<>
+ std::string DBUpdater<LoginDatabaseConnection>::GetDBModuleName()
+ {
+-    return "db-auth";
++    return "auth";
+ }
+ 
+ // World Database
+@@ -109,10 +115,16 @@ std::string DBUpdater<WorldDatabaseConnection>::GetTableName()
+     return "World";
+ }
+ 
++template<>
++std::string DBUpdater<WorldDatabaseConnection>::GetSourceDirectory()
++{
++    return BuiltInConfig::GetSourceDirectory();
++}
++
+ template<>
+ std::string DBUpdater<WorldDatabaseConnection>::GetBaseFilesDirectory()
+ {
+-    return BuiltInConfig::GetSourceDirectory() + "/data/sql/base/db_world/";
++    return DBUpdater<WorldDatabaseConnection>::GetSourceDirectory() + "/data/sql/base/db_world/";
+ }
+ 
+ template<>
+@@ -125,7 +137,7 @@ bool DBUpdater<WorldDatabaseConnection>::IsEnabled(uint32 const updateMask)
+ template<>
+ std::string DBUpdater<WorldDatabaseConnection>::GetDBModuleName()
+ {
+-    return "db-world";
++    return "world";
+ }
+ 
+ // Character Database
+@@ -141,10 +153,16 @@ std::string DBUpdater<CharacterDatabaseConnection>::GetTableName()
+     return "Character";
+ }
+ 
++template<>
++std::string DBUpdater<CharacterDatabaseConnection>::GetSourceDirectory()
++{
++    return BuiltInConfig::GetSourceDirectory();
++}
++
+ template<>
+ std::string DBUpdater<CharacterDatabaseConnection>::GetBaseFilesDirectory()
+ {
+-    return BuiltInConfig::GetSourceDirectory() + "/data/sql/base/db_characters/";
++    return DBUpdater<CharacterDatabaseConnection>::GetSourceDirectory() + "/data/sql/base/db_characters/";
+ }
+ 
+ template<>
+@@ -157,9 +175,49 @@ bool DBUpdater<CharacterDatabaseConnection>::IsEnabled(uint32 const updateMask)
+ template<>
+ std::string DBUpdater<CharacterDatabaseConnection>::GetDBModuleName()
+ {
+-    return "db-characters";
++    return "characters";
++}
++
++#ifdef MOD_PLAYERBOTS
++// Playerbots Database
++template<>
++std::string DBUpdater<PlayerbotsDatabaseConnection>::GetConfigEntry()
++{
++    return "Updates.Playerbots";
++}
++
++template<>
++std::string DBUpdater<PlayerbotsDatabaseConnection>::GetTableName()
++{
++    return "Playerbots";
+ }
+ 
++template<>
++std::string DBUpdater<PlayerbotsDatabaseConnection>::GetSourceDirectory()
++{
++    return BuiltInConfig::GetSourceDirectory() + "/modules/mod-playerbots";
++}
++
++template<>
++std::string DBUpdater<PlayerbotsDatabaseConnection>::GetBaseFilesDirectory()
++{
++    return DBUpdater<PlayerbotsDatabaseConnection>::GetSourceDirectory() + "/sql/playerbots/base/";
++}
++
++template<>
++bool DBUpdater<PlayerbotsDatabaseConnection>::IsEnabled(uint32 const updateMask)
++{
++    // This way silences warnings under msvc
++    return (updateMask & DatabaseLoader::DATABASE_PLAYERBOTS) ? true : false;
++}
++
++template<>
++std::string DBUpdater<PlayerbotsDatabaseConnection>::GetDBModuleName()
++{
++    return "db_playerbot";
++}
++#endif
++
+ // All
+ template<class T>
+ BaseLocation DBUpdater<T>::GetBaseLocationType()
+@@ -225,7 +283,7 @@ bool DBUpdater<T>::Update(DatabaseWorkerPool<T>& pool, std::string_view modulesL
+ 
+     LOG_INFO("sql.updates", "Updating {} database...", DBUpdater<T>::GetTableName());
+ 
+-    Path const sourceDirectory(BuiltInConfig::GetSourceDirectory());
++    Path const sourceDirectory(DBUpdater<T>::GetSourceDirectory());
+ 
+     if (!is_directory(sourceDirectory))
+     {
+@@ -300,7 +358,7 @@ bool DBUpdater<T>::Update(DatabaseWorkerPool<T>& pool, std::vector<std::string>
+         return false;
+     }
+ 
+-    Path const sourceDirectory(BuiltInConfig::GetSourceDirectory());
++    Path const sourceDirectory(DBUpdater<T>::GetSourceDirectory());
+     if (!is_directory(sourceDirectory))
+     {
+         return false;
+@@ -534,3 +592,7 @@ void DBUpdater<T>::ApplyFile(DatabaseWorkerPool<T>& pool, std::string const& hos
+ template class AC_DATABASE_API DBUpdater<LoginDatabaseConnection>;
+ template class AC_DATABASE_API DBUpdater<WorldDatabaseConnection>;
+ template class AC_DATABASE_API DBUpdater<CharacterDatabaseConnection>;
++
++#ifdef MOD_PLAYERBOTS
++template class AC_DATABASE_API DBUpdater<PlayerbotsDatabaseConnection>;
++#endif
+diff --git a/src/server/database/Updater/DBUpdater.h b/src/server/database/Updater/DBUpdater.h
+index 62af83df1..49ef448ef 100644
+--- a/src/server/database/Updater/DBUpdater.h
++++ b/src/server/database/Updater/DBUpdater.h
+@@ -71,6 +71,7 @@ public:
+ 
+     static inline std::string GetConfigEntry();
+     static inline std::string GetTableName();
++    static std::string GetSourceDirectory();
+     static std::string GetBaseFilesDirectory();
+     static bool IsEnabled(uint32 const updateMask);
+     static BaseLocation GetBaseLocationType();
+diff --git a/src/server/database/Updater/UpdateFetcher.cpp b/src/server/database/Updater/UpdateFetcher.cpp
+index 97811954d..b7d856a72 100644
+--- a/src/server/database/Updater/UpdateFetcher.cpp
++++ b/src/server/database/Updater/UpdateFetcher.cpp
+@@ -162,7 +162,7 @@ UpdateFetcher::DirectoryStorage UpdateFetcher::ReceiveIncludedDirectories() cons
+         // data/sql
+         for (auto const& itr : moduleList)
+         {
+-            std::string path = _sourceDirectory->generic_string() + "/modules/" + itr + "/data/sql/" + _dbModuleName; // modules/mod-name/data/sql/db-world
++            std::string path = _sourceDirectory->generic_string() + "/modules/" + itr + "/sql/" + _dbModuleName; // modules/mod-name/sql/world
+ 
+             Path const p(path);
+             if (!is_directory(p))
+diff --git a/src/server/game/Battlegrounds/ArenaTeam.cpp b/src/server/game/Battlegrounds/ArenaTeam.cpp
+index 2d326dcd0..14ffa19d2 100644
+--- a/src/server/game/Battlegrounds/ArenaTeam.cpp
++++ b/src/server/game/Battlegrounds/ArenaTeam.cpp
+@@ -1087,3 +1087,22 @@ std::unordered_map<uint8, uint8> ArenaTeam::ArenaReqPlayersForType =
+     { ARENA_TYPE_3v3, 6},
+     { ARENA_TYPE_5v5, 10}
+ };
++
++void ArenaTeam::SetEmblem(uint32 backgroundColor, uint8 emblemStyle, uint32 emblemColor, uint8 borderStyle, uint32 borderColor)
++{
++    BackgroundColor = backgroundColor;
++    EmblemStyle = emblemStyle;
++    EmblemColor = emblemColor;
++    BorderStyle = borderStyle;
++    BorderColor = borderColor;
++}
++
++void ArenaTeam::SetRatingForAll(uint32 rating)
++{
++    Stats.Rating = rating;
++
++    for (MemberList::iterator itr = Members.begin(); itr != Members.end(); ++itr)
++    {
++        itr->PersonalRating = rating;
++    }
++}
+diff --git a/src/server/game/Battlegrounds/ArenaTeam.h b/src/server/game/Battlegrounds/ArenaTeam.h
+index 9e799fa3d..103647309 100644
+--- a/src/server/game/Battlegrounds/ArenaTeam.h
++++ b/src/server/game/Battlegrounds/ArenaTeam.h
+@@ -218,6 +218,10 @@ public:
+     static std::unordered_map<uint32, uint8> ArenaSlotByType; // Slot -> Type
+     static std::unordered_map<uint8, uint8> ArenaReqPlayersForType; // Type -> Players count
+ 
++    void SetEmblem(uint32 backgroundColor, uint8 emblemStyle, uint32 emblemColor, uint8 borderStyle, uint32 borderColor);
++    void SetRatingForAll(uint32 rating);
++
++
+ protected:
+     uint32      TeamId;
+     uint8       Type;
+diff --git a/src/server/game/Battlegrounds/Battleground.h b/src/server/game/Battlegrounds/Battleground.h
+index 0b7aab9d9..f077b3931 100644
+--- a/src/server/game/Battlegrounds/Battleground.h
++++ b/src/server/game/Battlegrounds/Battleground.h
+@@ -209,6 +209,7 @@ struct BattlegroundObjectInfo
+ 
+ enum ArenaType : uint8
+ {
++    ARENA_TYPE_NONE                 = 0,
+     ARENA_TYPE_2v2                  = 2,
+     ARENA_TYPE_3v3                  = 3,
+     ARENA_TYPE_5v5                  = 5
+diff --git a/src/server/game/Battlegrounds/Zones/BattlegroundAB.h b/src/server/game/Battlegrounds/Zones/BattlegroundAB.h
+index 403664faf..6933f0944 100644
+--- a/src/server/game/Battlegrounds/Zones/BattlegroundAB.h
++++ b/src/server/game/Battlegrounds/Zones/BattlegroundAB.h
+@@ -287,6 +287,18 @@ protected:
+     uint32 BasesDefended = 0;
+ };
+ 
++struct CaptureABPointInfo
++{
++    CaptureABPointInfo() : _ownerTeamId(TEAM_NEUTRAL), _iconNone(0), _iconCapture(0), _state(BG_AB_NODE_STATE_NEUTRAL), _captured(false) {}
++
++    TeamId _ownerTeamId;
++    uint32 _iconNone;
++    uint32 _iconCapture;
++    uint8  _state;
++
++    bool _captured;
++};
++
+ class AC_GAME_API BattlegroundAB : public Battleground
+ {
+ public:
+@@ -311,6 +323,9 @@ public:
+     bool IsTeamScores500Disadvantage(TeamId teamId) const { return _teamScores500Disadvantage[teamId]; }
+ 
+     TeamId GetPrematureWinner() override;
++
++    [[nodiscard]] CaptureABPointInfo const& GetCapturePointInfo(uint32 node) const { return _capturePointInfo[node]; }
++
+ private:
+     void PostUpdateImpl(uint32 diff) override;
+ 
+@@ -321,21 +336,7 @@ private:
+     void NodeDeoccupied(uint8 node);
+     void ApplyPhaseMask();
+ 
+-    struct CapturePointInfo
+-    {
+-        CapturePointInfo() : _ownerTeamId(TEAM_NEUTRAL), _iconNone(0), _iconCapture(0), _state(BG_AB_NODE_STATE_NEUTRAL), _captured(false)
+-        {
+-        }
+-
+-        TeamId _ownerTeamId;
+-        uint32 _iconNone;
+-        uint32 _iconCapture;
+-        uint8 _state;
+-
+-        bool _captured;
+-    };
+-
+-    CapturePointInfo _capturePointInfo[BG_AB_DYNAMIC_NODES_COUNT];
++    CaptureABPointInfo _capturePointInfo[BG_AB_DYNAMIC_NODES_COUNT];
+     EventMap _bgEvents;
+     uint32 _honorTics;
+     uint32 _reputationTics;
+diff --git a/src/server/game/Battlegrounds/Zones/BattlegroundAV.h b/src/server/game/Battlegrounds/Zones/BattlegroundAV.h
+index 3768004fe..6eb387593 100644
+--- a/src/server/game/Battlegrounds/Zones/BattlegroundAV.h
++++ b/src/server/game/Battlegrounds/Zones/BattlegroundAV.h
+@@ -1651,6 +1651,10 @@ public:
+ 
+     TeamId GetPrematureWinner() override;
+ 
++    [[nodiscard]] BG_AV_NodeInfo const& GetAVNodeInfo(uint32 node) const { return m_Nodes[node]; }
++    [[nodiscard]] bool IsCaptainAlive(uint8 index) const { return m_CaptainAlive[index]; }
++    [[nodiscard]] TeamId GetMineOwner(uint8 index) const { return m_Mine_Owner[index]; }
++
+ private:
+     void PostUpdateImpl(uint32 diff) override;
+ 
+diff --git a/src/server/game/Battlegrounds/Zones/BattlegroundEY.h b/src/server/game/Battlegrounds/Zones/BattlegroundEY.h
+index 4e364df5b..c151117f5 100644
+--- a/src/server/game/Battlegrounds/Zones/BattlegroundEY.h
++++ b/src/server/game/Battlegrounds/Zones/BattlegroundEY.h
+@@ -376,6 +376,25 @@ protected:
+     uint32 FlagCaptures = 0;
+ };
+ 
++struct CaptureEYPointInfo
++{
++    CaptureEYPointInfo() : _ownerTeamId(TEAM_NEUTRAL), _barStatus(BG_EY_PROGRESS_BAR_STATE_MIDDLE), _areaTrigger(0)
++    {
++        _playersCount[TEAM_ALLIANCE] = 0;
++        _playersCount[TEAM_HORDE] = 0;
++    }
++
++    Player* player = nullptr;
++    TeamId _ownerTeamId;
++    int8 _barStatus;
++    uint32 _areaTrigger;
++    int8 _playersCount[PVP_TEAMS_COUNT];
++
++    bool IsUnderControl(TeamId teamId) const { return _ownerTeamId == teamId; }
++    bool IsUnderControl() const { return _ownerTeamId != TEAM_NEUTRAL; }
++    bool IsUncontrolled() const { return _ownerTeamId == TEAM_NEUTRAL; }
++};
++
+ class AC_GAME_API BattlegroundEY : public Battleground
+ {
+ public:
+@@ -415,6 +434,8 @@ public:
+     bool AllNodesConrolledByTeam(TeamId teamId) const override;
+     TeamId GetPrematureWinner() override;
+ 
++    [[nodiscard]] CaptureEYPointInfo const& GetCapturePointInfo(uint32 node) const { return _capturePointInfo[node]; }
++
+ private:
+     void PostUpdateImpl(uint32 diff) override;
+ 
+@@ -430,26 +451,7 @@ private:
+     /* Scorekeeping */
+     void AddPoints(TeamId teamId, uint32 points);
+ 
+-    struct CapturePointInfo
+-    {
+-        CapturePointInfo() : _ownerTeamId(TEAM_NEUTRAL), _barStatus(BG_EY_PROGRESS_BAR_STATE_MIDDLE), _areaTrigger(0)
+-        {
+-            _playersCount[TEAM_ALLIANCE] = 0;
+-            _playersCount[TEAM_HORDE] = 0;
+-        }
+-
+-        TeamId _ownerTeamId;
+-        int8 _barStatus;
+-        uint32 _areaTrigger;
+-        int8 _playersCount[PVP_TEAMS_COUNT];
+-        Player* player = nullptr;
+-
+-        bool IsUnderControl(TeamId teamId) const { return _ownerTeamId == teamId; }
+-        bool IsUnderControl() const { return _ownerTeamId != TEAM_NEUTRAL; }
+-        bool IsUncontrolled() const { return _ownerTeamId == TEAM_NEUTRAL; }
+-    };
+-
+-    CapturePointInfo _capturePointInfo[EY_POINTS_MAX];
++    CaptureEYPointInfo _capturePointInfo[EY_POINTS_MAX];
+     EventMap _bgEvents;
+     uint32 _honorTics;
+     uint8 _ownedPointsCount[PVP_TEAMS_COUNT];
+diff --git a/src/server/game/Battlegrounds/Zones/BattlegroundIC.h b/src/server/game/Battlegrounds/Zones/BattlegroundIC.h
+index 6a6b40188..e8ec81bf0 100644
+--- a/src/server/game/Battlegrounds/Zones/BattlegroundIC.h
++++ b/src/server/game/Battlegrounds/Zones/BattlegroundIC.h
+@@ -983,6 +983,9 @@ public:
+     bool AllNodesConrolledByTeam(TeamId teamId) const override;  // overwrited
+     bool IsResourceGlutAllowed(TeamId teamId) const;
+     void DoAction(uint32 action, ObjectGuid guid) override;
++
++    [[nodiscard]] ICNodePoint const& GetICNodePoint(uint8 index) { return nodePoint[index]; }
++
+ private:
+     uint32 closeFortressDoorsTimer;
+     bool doorsClosed;
+diff --git a/src/server/game/Combat/UnitEvents.h b/src/server/game/Combat/UnitEvents.h
+index 1f106898f..9076b29d4 100644
+--- a/src/server/game/Combat/UnitEvents.h
++++ b/src/server/game/Combat/UnitEvents.h
+@@ -92,13 +92,27 @@ private:
+     };
+     ThreatMgr* iThreatMgr;
+ public:
+-    ThreatRefStatusChangeEvent(uint32 pType) : UnitBaseEvent(pType), iThreatMgr(nullptr) { iHostileReference = nullptr; }
++    ThreatRefStatusChangeEvent(uint32 pType) : UnitBaseEvent(pType), iThreatMgr(nullptr), iFValue(0.f)
++    {
++        iHostileReference = nullptr;
++    }
+ 
+-    ThreatRefStatusChangeEvent(uint32 pType, HostileReference* pHostileReference) : UnitBaseEvent(pType), iThreatMgr(nullptr) { iHostileReference = pHostileReference; }
++    ThreatRefStatusChangeEvent(uint32 pType, HostileReference* pHostileReference) : UnitBaseEvent(pType), iThreatMgr(nullptr), iFValue(0.f)
++    {
++        iHostileReference = pHostileReference;
++    }
+ 
+-    ThreatRefStatusChangeEvent(uint32 pType, HostileReference* pHostileReference, float pValue) : UnitBaseEvent(pType), iThreatMgr(nullptr) { iHostileReference = pHostileReference; iFValue = pValue; }
++    ThreatRefStatusChangeEvent(uint32 pType, HostileReference* pHostileReference, float pValue) : UnitBaseEvent(pType), iThreatMgr(nullptr)
++    {
++        iHostileReference = pHostileReference;
++        iFValue = pValue;
++    }
+ 
+-    ThreatRefStatusChangeEvent(uint32 pType, HostileReference* pHostileReference, bool pValue) : UnitBaseEvent(pType), iThreatMgr(nullptr) { iHostileReference = pHostileReference; iBValue = pValue; }
++    ThreatRefStatusChangeEvent(uint32 pType, HostileReference* pHostileReference, bool pValue) : UnitBaseEvent(pType), iThreatMgr(nullptr)
++    {
++        iHostileReference = pHostileReference;
++        iBValue = pValue;
++    }
+ 
+     [[nodiscard]] int32 getIValue() const { return iIValue; }
+ 
+diff --git a/src/server/game/DataStores/DBCStores.cpp b/src/server/game/DataStores/DBCStores.cpp
+index 400b294f8..f195c41ee 100644
+--- a/src/server/game/DataStores/DBCStores.cpp
++++ b/src/server/game/DataStores/DBCStores.cpp
+@@ -34,6 +34,8 @@ typedef std::map<uint32, uint32> AreaFlagByMapID;
+ typedef std::tuple<int16, int8, int32> WMOAreaTableKey;
+ typedef std::map<WMOAreaTableKey, WMOAreaTableEntry const*> WMOAreaInfoByTripple;
+ 
++typedef std::multimap<uint32, CharSectionsEntry const*> CharSectionsMap;
++
+ DBCStorage <AreaTableEntry> sAreaTableStore(AreaTableEntryfmt);
+ DBCStorage <AreaGroupEntry> sAreaGroupStore(AreaGroupEntryfmt);
+ DBCStorage <AreaPOIEntry> sAreaPOIStore(AreaPOIEntryfmt);
+@@ -49,6 +51,10 @@ DBCStorage <BattlemasterListEntry> sBattlemasterListStore(BattlemasterListEntryf
+ DBCStorage <BarberShopStyleEntry> sBarberShopStyleStore(BarberShopStyleEntryfmt);
+ DBCStorage <CharStartOutfitEntry> sCharStartOutfitStore(CharStartOutfitEntryfmt);
+ std::map<uint32, CharStartOutfitEntry const*> sCharStartOutfitMap;
++
++DBCStorage <CharSectionsEntry> sCharSectionsStore(CharSectionsEntryfmt);
++CharSectionsMap sCharSectionMap;
++
+ DBCStorage <CharTitlesEntry> sCharTitlesStore(CharTitlesEntryfmt);
+ DBCStorage <ChatChannelsEntry> sChatChannelsStore(ChatChannelsEntryfmt);
+ DBCStorage <ChrClassesEntry> sChrClassesStore(ChrClassesEntryfmt);
+@@ -71,6 +77,10 @@ DBCStorage <DurabilityCostsEntry> sDurabilityCostsStore(DurabilityCostsfmt);
+ DBCStorage <EmotesEntry> sEmotesStore(EmotesEntryfmt);
+ DBCStorage <EmotesTextEntry> sEmotesTextStore(EmotesTextEntryfmt);
+ 
++typedef std::tuple<uint32, uint32, uint32> EmotesTextSoundKey;
++static std::map<EmotesTextSoundKey, EmotesTextSoundEntry const*> sEmotesTextSoundMap;
++DBCStorage <EmotesTextSoundEntry> sEmotesTextSoundStore(EmotesTextSoundEntryfmt);
++
+ typedef std::map<uint32, SimpleFactionsList> FactionTeamMap;
+ static FactionTeamMap sFactionTeamMap;
+ DBCStorage <FactionEntry> sFactionStore(FactionEntryfmt);
+@@ -278,6 +288,7 @@ void LoadDBCStores(const std::string& dataPath)
+     LOAD_DBC(sBattlemasterListStore,                "BattlemasterList.dbc",                 "battlemasterlist_dbc");
+     LOAD_DBC(sBarberShopStyleStore,                 "BarberShopStyle.dbc",                  "barbershopstyle_dbc");
+     LOAD_DBC(sCharStartOutfitStore,                 "CharStartOutfit.dbc",                  "charstartoutfit_dbc");
++    LOAD_DBC(sCharSectionsStore,                    "CharSections.dbc",                     "charsections_dbc");
+     LOAD_DBC(sCharTitlesStore,                      "CharTitles.dbc",                       "chartitles_dbc");
+     LOAD_DBC(sChatChannelsStore,                    "ChatChannels.dbc",                     "chatchannels_dbc");
+     LOAD_DBC(sChrClassesStore,                      "ChrClasses.dbc",                       "chrclasses_dbc");
+@@ -297,6 +308,7 @@ void LoadDBCStores(const std::string& dataPath)
+     LOAD_DBC(sDurabilityQualityStore,               "DurabilityQuality.dbc",                "durabilityquality_dbc");
+     LOAD_DBC(sEmotesStore,                          "Emotes.dbc",                           "emotes_dbc");
+     LOAD_DBC(sEmotesTextStore,                      "EmotesText.dbc",                       "emotestext_dbc");
++    LOAD_DBC(sEmotesTextSoundStore,                 "EmotesTextSound.dbc",                  "emotetextsound_dbc");
+     LOAD_DBC(sFactionStore,                         "Faction.dbc",                          "faction_dbc");
+     LOAD_DBC(sFactionTemplateStore,                 "FactionTemplate.dbc",                  "factiontemplate_dbc");
+     LOAD_DBC(sGameObjectArtKitStore,                "GameObjectArtKit.dbc",                 "gameobjectartkit_dbc");
+@@ -384,6 +396,10 @@ void LoadDBCStores(const std::string& dataPath)
+     for (CharStartOutfitEntry const* outfit : sCharStartOutfitStore)
+         sCharStartOutfitMap[outfit->Race | (outfit->Class << 8) | (outfit->Gender << 16)] = outfit;
+ 
++    for (CharSectionsEntry const* charSection : sCharSectionsStore)
++        if (charSection->Race && ((1 << (charSection->Race - 1)) & RACEMASK_ALL_PLAYABLE) != 0) //ignore Nonplayable races
++            sCharSectionMap.insert({ charSection->GenType | (charSection->Gender << 8) | (charSection->Race << 16), charSection });
++
+     for (FactionEntry const* faction : sFactionStore)
+     {
+         if (faction->team)
+@@ -405,6 +421,9 @@ void LoadDBCStores(const std::string& dataPath)
+             std::swap(*(float*)(&info->maxZ), *(float*)(&info->minZ));
+     }
+ 
++    for (EmotesTextSoundEntry const* emoteTextSound : sEmotesTextSoundStore)
++        sEmotesTextSoundMap[EmotesTextSoundKey(emoteTextSound->EmotesTextId, emoteTextSound->RaceId, emoteTextSound->SexId)] = emoteTextSound;
++
+     // fill data
+     for (MapDifficultyEntry const* entry : sMapDifficultyStore)
+         sMapDifficultyMap[MAKE_PAIR32(entry->MapId, entry->Difficulty)] = MapDifficulty(entry->resetTime, entry->maxPlayers, entry->areaTriggerText[0] != '\0');
+@@ -841,6 +860,18 @@ CharStartOutfitEntry const* GetCharStartOutfitEntry(uint8 race, uint8 class_, ui
+     return itr->second;
+ }
+ 
++CharSectionsEntry const* GetCharSectionEntry(uint8 race, CharSectionType genType, uint8 gender, uint8 type, uint8 color)
++{
++    std::pair<CharSectionsMap::const_iterator, CharSectionsMap::const_iterator> eqr = sCharSectionMap.equal_range(uint32(genType) | uint32(gender << 8) | uint32(race << 16));
++    for (CharSectionsMap::const_iterator itr = eqr.first; itr != eqr.second; ++itr)
++    {
++        if (itr->second->Type == type && itr->second->Color == color)
++            return itr->second;
++    }
++
++    return nullptr;
++}
++
+ /// Returns LFGDungeonEntry for a specific map and difficulty. Will return first found entry if multiple dungeons use the same map (such as Scarlet Monastery)
+ LFGDungeonEntry const* GetLFGDungeon(uint32 mapId, Difficulty difficulty)
+ {
+@@ -899,3 +930,9 @@ SkillRaceClassInfoEntry const* GetSkillRaceClassInfo(uint32 skill, uint8 race, u
+ 
+     return nullptr;
+ }
++
++EmotesTextSoundEntry const* FindTextSoundEmoteFor(uint32 emote, uint32 race, uint32 gender)
++{
++    auto itr = sEmotesTextSoundMap.find(EmotesTextSoundKey(emote, race, gender));
++    return itr != sEmotesTextSoundMap.end() ? itr->second : nullptr;
++}
+diff --git a/src/server/game/DataStores/DBCStores.h b/src/server/game/DataStores/DBCStores.h
+index 07bf72a63..148525cdc 100644
+--- a/src/server/game/DataStores/DBCStores.h
++++ b/src/server/game/DataStores/DBCStores.h
+@@ -63,6 +63,8 @@ PvPDifficultyEntry const* GetBattlegroundBracketById(uint32 mapid, BattlegroundB
+ 
+ CharStartOutfitEntry const* GetCharStartOutfitEntry(uint8 race, uint8 class_, uint8 gender);
+ 
++CharSectionsEntry const* GetCharSectionEntry(uint8 race, CharSectionType genType, uint8 gender, uint8 type, uint8 color);
++
+ LFGDungeonEntry const* GetLFGDungeon(uint32 mapId, Difficulty difficulty);
+ LFGDungeonEntry const* GetZoneLFGDungeonEntry(std::string const& zoneName, LocaleConstant locale);
+ 
+@@ -72,6 +74,8 @@ typedef std::unordered_multimap<uint32, SkillRaceClassInfoEntry const*> SkillRac
+ typedef std::pair<SkillRaceClassInfoMap::iterator, SkillRaceClassInfoMap::iterator> SkillRaceClassInfoBounds;
+ SkillRaceClassInfoEntry const* GetSkillRaceClassInfo(uint32 skill, uint8 race, uint8 class_);
+ 
++EmotesTextSoundEntry const* FindTextSoundEmoteFor(uint32 emote, uint32 race, uint32 gender);
++
+ extern DBCStorage <AchievementEntry>             sAchievementStore;
+ extern DBCStorage <AchievementCriteriaEntry>     sAchievementCriteriaStore;
+ extern DBCStorage <AchievementCategoryEntry>     sAchievementCategoryStore;
+@@ -84,6 +88,7 @@ extern DBCStorage <BarberShopStyleEntry>         sBarberShopStyleStore;
+ extern DBCStorage <BattlemasterListEntry>        sBattlemasterListStore;
+ extern DBCStorage <ChatChannelsEntry>            sChatChannelsStore;
+ extern DBCStorage <CharStartOutfitEntry>         sCharStartOutfitStore;
++extern DBCStorage <CharSectionsEntry>            sCharSectionsStore;
+ extern DBCStorage <CharTitlesEntry>              sCharTitlesStore;
+ extern DBCStorage <ChrClassesEntry>              sChrClassesStore;
+ extern DBCStorage <ChrRacesEntry>                sChrRacesStore;
+@@ -102,6 +107,7 @@ extern DBCStorage <DurabilityCostsEntry>         sDurabilityCostsStore;
+ extern DBCStorage <DurabilityQualityEntry>       sDurabilityQualityStore;
+ extern DBCStorage <EmotesEntry>                  sEmotesStore;
+ extern DBCStorage <EmotesTextEntry>              sEmotesTextStore;
++extern DBCStorage <EmotesTextSoundEntry>         sEmotesTextSoundStore;
+ extern DBCStorage <FactionEntry>                 sFactionStore;
+ extern DBCStorage <FactionTemplateEntry>         sFactionTemplateStore;
+ extern DBCStorage <GameObjectArtKitEntry>        sGameObjectArtKitStore;
+diff --git a/src/server/game/DungeonFinding/LFGMgr.h b/src/server/game/DungeonFinding/LFGMgr.h
+index 31a067a60..dceeefb22 100644
+--- a/src/server/game/DungeonFinding/LFGMgr.h
++++ b/src/server/game/DungeonFinding/LFGMgr.h
+@@ -579,6 +579,7 @@ namespace lfg
+         [[nodiscard]] bool IsTesting() const { return m_Testing; }
+ 
+         void SetDungeon(ObjectGuid guid, uint32 dungeon);
++        LFGDungeonData const* GetLFGDungeon(uint32 id);
+ 
+     private:
+         TeamId GetTeam(ObjectGuid guid);
+@@ -591,7 +592,6 @@ namespace lfg
+         void SetCanOverrideRBState(ObjectGuid guid, bool val);
+         void GetCompatibleDungeons(LfgDungeonSet& dungeons, LfgGuidSet const& players, LfgLockPartyMap& lockMap);
+         void _SaveToDB(ObjectGuid guid);
+-        LFGDungeonData const* GetLFGDungeon(uint32 id);
+ 
+         // Proposals
+         void RemoveProposal(LfgProposalContainer::iterator itProposal, LfgUpdateType type);
+diff --git a/src/server/game/DungeonFinding/LFGQueue.cpp b/src/server/game/DungeonFinding/LFGQueue.cpp
+index c8fea1191..68b9df231 100644
+--- a/src/server/game/DungeonFinding/LFGQueue.cpp
++++ b/src/server/game/DungeonFinding/LFGQueue.cpp
+@@ -26,6 +26,7 @@
+ #include "ObjectDefines.h"
+ #include "ObjectMgr.h"
+ #include "Player.h"
++#include "ScriptMgr.h"
+ #include "World.h"
+ 
+ namespace lfg
+@@ -412,6 +413,11 @@ namespace lfg
+         if (!sLFGMgr->AllQueued(check)) // can't create proposal
+             return LFG_COMPATIBILITY_PENDING;
+ 
++        if (!sScriptMgr->OnPlayerbotCheckLFGQueue(proposal.queues))
++        {
++            return LFG_INCOMPATIBLES_HAS_IGNORES;
++        }
++
+         // Create a new proposal
+         proposal.cancelTime = GameTime::GetGameTime().count() + LFG_TIME_PROPOSAL;
+         proposal.state = LFG_PROPOSAL_INITIATING;
+diff --git a/src/server/game/Entities/Creature/Creature.cpp b/src/server/game/Entities/Creature/Creature.cpp
+index 987191e96..0956a6dd9 100644
+--- a/src/server/game/Entities/Creature/Creature.cpp
++++ b/src/server/game/Entities/Creature/Creature.cpp
+@@ -1393,6 +1393,7 @@ void Creature::SaveToDB(uint32 mapid, uint8 spawnMask, uint32 phaseMask)
+         m_spawnId = sObjectMgr->GenerateCreatureSpawnId();
+ 
+     CreatureData& data = sObjectMgr->NewOrExistCreatureData(m_spawnId);
++    data.spawnId = m_spawnId;
+ 
+     uint32 displayId = GetNativeDisplayId();
+     uint32 npcflag = GetNpcFlags();
+@@ -3538,7 +3539,7 @@ bool Creature::IsMovementPreventedByCasting() const
+ void Creature::SetCannotReachTarget(ObjectGuid const& cannotReach)
+ {
+     if (cannotReach == m_cannotReachTarget)
+-    {
++{
+         return;
+     }
+ 
+diff --git a/src/server/game/Entities/Creature/CreatureData.h b/src/server/game/Entities/Creature/CreatureData.h
+index fd4d3432b..5a3e3f4a8 100644
+--- a/src/server/game/Entities/Creature/CreatureData.h
++++ b/src/server/game/Entities/Creature/CreatureData.h
+@@ -358,6 +358,7 @@ typedef std::unordered_map<uint32, EquipmentInfoContainerInternal> EquipmentInfo
+ struct CreatureData
+ {
+     CreatureData() = default;
++    ObjectGuid::LowType spawnId{0};
+     uint32 id1{0};                                             // entry in creature_template
+     uint32 id2{0};                                             // entry in creature_template
+     uint32 id3{0};                                             // entry in creature_template
+diff --git a/src/server/game/Entities/GameObject/GameObject.cpp b/src/server/game/Entities/GameObject/GameObject.cpp
+index 7431b5050..9236fc594 100644
+--- a/src/server/game/Entities/GameObject/GameObject.cpp
++++ b/src/server/game/Entities/GameObject/GameObject.cpp
+@@ -1062,6 +1062,7 @@ void GameObject::SaveToDB(uint32 mapid, uint8 spawnMask, uint32 phaseMask, bool
+ 
+     // update in loaded data (changing data only in this place)
+     GameObjectData& data = sObjectMgr->NewGOData(m_spawnId);
++    data.spawnId = m_spawnId;
+ 
+     data.id = GetEntry();
+     data.mapid = mapid;
+diff --git a/src/server/game/Entities/GameObject/GameObjectData.h b/src/server/game/Entities/GameObject/GameObjectData.h
+index 65566447b..22a222e38 100644
+--- a/src/server/game/Entities/GameObject/GameObjectData.h
++++ b/src/server/game/Entities/GameObject/GameObjectData.h
+@@ -696,6 +696,7 @@ enum GOState
+ struct GameObjectData
+ {
+     explicit GameObjectData() = default;
++    ObjectGuid::LowType spawnId{0};
+     uint32 id{ 0 };                                              // entry in gamobject_template
+     uint16 mapid{ 0 };
+     uint32 phaseMask{ 0 };
+diff --git a/src/server/game/Entities/Item/ItemTemplate.h b/src/server/game/Entities/Item/ItemTemplate.h
+index 30eb7860f..3165111d2 100644
+--- a/src/server/game/Entities/Item/ItemTemplate.h
++++ b/src/server/game/Entities/Item/ItemTemplate.h
+@@ -260,7 +260,7 @@ enum SocketColor
+ 
+ #define SOCKET_COLOR_ALL (SOCKET_COLOR_META | SOCKET_COLOR_RED | SOCKET_COLOR_YELLOW | SOCKET_COLOR_BLUE)
+ 
+-enum InventoryType
++enum InventoryType : uint32
+ {
+     INVTYPE_NON_EQUIP                           = 0,
+     INVTYPE_HEAD                                = 1,
+@@ -827,6 +827,8 @@ struct ItemTemplate
+     [[nodiscard]] bool IsWeaponVellum() const { return Class == ITEM_CLASS_TRADE_GOODS && SubClass == ITEM_SUBCLASS_WEAPON_ENCHANTMENT; }
+     [[nodiscard]] bool IsArmorVellum() const { return Class == ITEM_CLASS_TRADE_GOODS && SubClass == ITEM_SUBCLASS_ARMOR_ENCHANTMENT; }
+     [[nodiscard]] bool IsConjuredConsumable() const { return Class == ITEM_CLASS_CONSUMABLE && (Flags & ITEM_FLAG_CONJURED); }
++    [[nodiscard]] bool IsWeapon() const { return Class == ITEM_CLASS_WEAPON; }
++    [[nodiscard]] bool IsRangedWeapon() const { return IsWeapon() && (InventoryType == INVTYPE_RANGED || InventoryType == INVTYPE_THROWN || InventoryType == INVTYPE_RANGEDRIGHT); }
+ 
+     [[nodiscard]] bool HasStat(ItemModType stat) const;
+     [[nodiscard]] bool HasSpellPowerStat() const;
+diff --git a/src/server/game/Entities/Player/Player.cpp b/src/server/game/Entities/Player/Player.cpp
+index d5c99078b..3f8648bf3 100644
+--- a/src/server/game/Entities/Player/Player.cpp
++++ b/src/server/game/Entities/Player/Player.cpp
+@@ -3232,7 +3232,9 @@ void Player::learnSpell(uint32 spellId, bool temporary /*= false*/, bool learnFr
+     // Xinef: don't allow to learn active spell once more
+     if (HasActiveSpell(spellId))
+     {
++#ifndef MOD_PLAYERBOTS
+         LOG_DEBUG("entities.player", "Player ({}) tries to learn already active spell: {}", GetGUID().ToString(), spellId);
++#endif
+         return;
+     }
+ 
+diff --git a/src/server/game/Entities/Player/Player.h b/src/server/game/Entities/Player/Player.h
+index 2951bb669..da056a5b8 100644
+--- a/src/server/game/Entities/Player/Player.h
++++ b/src/server/game/Entities/Player/Player.h
+@@ -670,7 +670,7 @@ enum PlayerSlots
+ 
+ #define INVENTORY_SLOT_BAG_0    255
+ 
+-enum EquipmentSlots                                         // 19 slots
++enum EquipmentSlots : uint32                                 // 19 slots
+ {
+     EQUIPMENT_SLOT_START        = 0,
+     EQUIPMENT_SLOT_HEAD         = 0,
+@@ -2575,6 +2575,8 @@ public:
+     [[nodiscard]] PlayerSetting GetPlayerSetting(std::string source, uint8 index);
+     void UpdatePlayerSetting(std::string source, uint8 index, uint32 value);
+ 
++    void ResetSpeakTimers();
++
+     std::string GetDebugInfo() const override;
+ 
+  protected:
+diff --git a/src/server/game/Entities/Player/PlayerQuest.cpp b/src/server/game/Entities/Player/PlayerQuest.cpp
+index d4453d2ab..a4b5861c8 100644
+--- a/src/server/game/Entities/Player/PlayerQuest.cpp
++++ b/src/server/game/Entities/Player/PlayerQuest.cpp
+@@ -825,25 +825,29 @@ void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver,
+     // cast spells after mark quest complete (some spells have quest completed state requirements in spell_area data)
+     if (quest->GetRewSpellCast() > 0)
+     {
+-        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(quest->GetRewSpellCast());
+-        if (questGiver->isType(TYPEMASK_UNIT) && !spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL) && !spellInfo->HasEffect(SPELL_EFFECT_CREATE_ITEM) && !spellInfo->IsSelfCast())
++        if (SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(quest->GetRewSpellCast()))
+         {
+-            if (Creature* creature = GetMap()->GetCreature(questGiver->GetGUID()))
+-                creature->CastSpell(this, quest->GetRewSpellCast(), true);
++            if (questGiver->isType(TYPEMASK_UNIT) && !spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL) && !spellInfo->HasEffect(SPELL_EFFECT_CREATE_ITEM) && !spellInfo->IsSelfCast())
++            {
++                if (Creature* creature = GetMap()->GetCreature(questGiver->GetGUID()))
++                    creature->CastSpell(this, quest->GetRewSpellCast(), true);
++            }
++            else
++                CastSpell(this, quest->GetRewSpellCast(), true);
+         }
+-        else
+-            CastSpell(this, quest->GetRewSpellCast(), true);
+     }
+     else if (quest->GetRewSpell() > 0)
+     {
+-        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(quest->GetRewSpell());
+-        if (questGiver->isType(TYPEMASK_UNIT) && !spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL) && !spellInfo->HasEffect(SPELL_EFFECT_CREATE_ITEM) && !spellInfo->IsSelfCast())
++        if (SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(quest->GetRewSpell()))
+         {
+-            if (Creature* creature = GetMap()->GetCreature(questGiver->GetGUID()))
+-                creature->CastSpell(this, quest->GetRewSpell(), true);
++            if (questGiver->isType(TYPEMASK_UNIT) && !spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL) && !spellInfo->HasEffect(SPELL_EFFECT_CREATE_ITEM) && !spellInfo->IsSelfCast())
++            {
++                if (Creature* creature = GetMap()->GetCreature(questGiver->GetGUID()))
++                    creature->CastSpell(this, quest->GetRewSpell(), true);
++            }
++            else
++                CastSpell(this, quest->GetRewSpell(), true);
+         }
+-        else
+-            CastSpell(this, quest->GetRewSpell(), true);
+     }
+ 
+     if (quest->GetZoneOrSort() > 0)
+diff --git a/src/server/game/Entities/Player/PlayerUpdates.cpp b/src/server/game/Entities/Player/PlayerUpdates.cpp
+index 9a7e09f80..1799fe23d 100644
+--- a/src/server/game/Entities/Player/PlayerUpdates.cpp
++++ b/src/server/game/Entities/Player/PlayerUpdates.cpp
+@@ -420,6 +420,8 @@ void Player::Update(uint32 p_time)
+         m_delayed_unit_relocation_timer = 0;
+         RemoveFromNotify(NOTIFY_VISIBILITY_CHANGED);
+     }
++
++    sScriptMgr->OnAfterPlayerUpdate(this, p_time);
+ }
+ 
+ void Player::UpdateMirrorTimers()
+diff --git a/src/server/game/Entities/Unit/Unit.cpp b/src/server/game/Entities/Unit/Unit.cpp
+index 9d1b0a377..7e90fc477 100644
+--- a/src/server/game/Entities/Unit/Unit.cpp
++++ b/src/server/game/Entities/Unit/Unit.cpp
+@@ -10193,15 +10193,32 @@ ReputationRank Unit::GetFactionReactionTo(FactionTemplateEntry const* factionTem
+         }
+     }
+ 
++    return GetFactionReactionTo(factionTemplateEntry, targetFactionTemplateEntry);
++}
++
++ReputationRank Unit::GetFactionReactionTo(FactionTemplateEntry const* factionTemplateEntry, FactionTemplateEntry const* targetFactionTemplateEntry)
++{
+     // common faction based check
+     if (factionTemplateEntry->IsHostileTo(*targetFactionTemplateEntry))
++    {
+         return REP_HOSTILE;
++    }
++
+     if (factionTemplateEntry->IsFriendlyTo(*targetFactionTemplateEntry))
++    {
+         return REP_FRIENDLY;
++    }
++
+     if (targetFactionTemplateEntry->IsFriendlyTo(*factionTemplateEntry))
++    {
+         return REP_FRIENDLY;
++    }
++
+     if (factionTemplateEntry->factionFlags & FACTION_TEMPLATE_FLAG_HATES_ALL_EXCEPT_FRIENDS)
++    {
+         return REP_HOSTILE;
++    }
++
+     // neutral by default
+     return REP_NEUTRAL;
+ }
+@@ -18096,6 +18113,8 @@ void Unit::Kill(Unit* killer, Unit* victim, bool durabilityLoss, WeaponAttackTyp
+             }
+         }
+ 
++        sScriptMgr->OnPlayerbotCheckKillTask(player, victim);
++
+         // Dungeon specific stuff, only applies to players killing creatures
+         if (creature->GetInstanceId())
+         {
+@@ -19054,11 +19073,23 @@ void Unit::SendPlaySpellVisual(uint32 id)
+     SendMessageToSet(&data, true);
+ }
+ 
++void Unit::SendPlaySpellVisual(ObjectGuid guid, uint32 id)
++{
++    WorldPacket data(SMSG_PLAY_SPELL_VISUAL, 8 + 4);
++    data << guid;
++    data << uint32(id); // SpellVisualKit.dbc index
++    SendMessageToSet(&data, true);
++}
++
+ void Unit::SendPlaySpellImpact(ObjectGuid guid, uint32 id)
+ {
+     WorldPacket data(SMSG_PLAY_SPELL_IMPACT, 8 + 4);
+     data << guid;       // target
+     data << uint32(id); // SpellVisualKit.dbc index
++
++    if (IsPlayer())
++        ToPlayer()->SendDirectMessage(&data);
++    else
+     SendMessageToSet(&data, true);
+ }
+ 
+@@ -21427,3 +21458,18 @@ std::string Unit::GetDebugInfo() const
+         << " Class: " << std::to_string(getClass());
+     return sstr.str();
+ }
++
++void Unit::SetCannotReachTargetUnit(bool cannotReach, bool isChase)
++{
++    if (cannotReach == m_cannotReachTarget)
++    {
++        return;
++    }
++
++    m_cannotReachTarget = cannotReach;
++}
++
++bool Unit::CanNotReachTarget() const
++{
++    return m_cannotReachTarget;
++}
+diff --git a/src/server/game/Entities/Unit/Unit.h b/src/server/game/Entities/Unit/Unit.h
+index 6fa06c994..68fa2ade8 100644
+--- a/src/server/game/Entities/Unit/Unit.h
++++ b/src/server/game/Entities/Unit/Unit.h
+@@ -1498,6 +1498,7 @@ public:
+ 
+     ReputationRank GetReactionTo(Unit const* target, bool checkOriginalFaction = false) const;
+     ReputationRank GetFactionReactionTo(FactionTemplateEntry const* factionTemplateEntry, Unit const* target) const;
++    static ReputationRank GetFactionReactionTo(FactionTemplateEntry const* factionTemplateEntry, FactionTemplateEntry const* targetFactionTemplateEntry);
+ 
+     bool IsHostileTo(Unit const* unit) const;
+     [[nodiscard]] bool IsHostileToPlayers() const;
+@@ -1743,6 +1744,7 @@ public:
+     Aura* AddAura(SpellInfo const* spellInfo, uint8 effMask, Unit* target);
+     void SetAuraStack(uint32 spellId, Unit* target, uint32 stack);
+     void SendPlaySpellVisual(uint32 id);
++    void SendPlaySpellVisual(ObjectGuid guid, uint32 id);
+     void SendPlaySpellImpact(ObjectGuid guid, uint32 id);
+     void BuildCooldownPacket(WorldPacket& data, uint8 flags, uint32 spellId, uint32 cooldown);
+     void BuildCooldownPacket(WorldPacket& data, uint8 flags, PacketCooldowns const& cooldowns);
+@@ -2460,6 +2462,10 @@ public:
+     [[nodiscard]] bool CanRestoreMana(SpellInfo const* spellInfo) const;
+ 
+     std::string GetDebugInfo() const override;
++    void SetCannotReachTargetUnit(bool target, bool isChase);
++    [[nodiscard]] bool CanNotReachTarget() const;
++
++    bool m_cannotReachTarget;
+ 
+ protected:
+     explicit Unit (bool isWorldObject);
+diff --git a/src/server/game/Entities/Vehicle/VehicleDefines.h b/src/server/game/Entities/Vehicle/VehicleDefines.h
+index 7b3991946..2385b5cf0 100644
+--- a/src/server/game/Entities/Vehicle/VehicleDefines.h
++++ b/src/server/game/Entities/Vehicle/VehicleDefines.h
+@@ -46,6 +46,7 @@ enum VehicleFlags
+     VEHICLE_FLAG_CUSTOM_PITCH                    = 0x00000040,           // If set use pitchMin and pitchMax from DBC, otherwise pitchMin = -pi/2, pitchMax = pi/2
+     VEHICLE_FLAG_ADJUST_AIM_ANGLE                = 0x00000400,           // Lua_IsVehicleAimAngleAdjustable
+     VEHICLE_FLAG_ADJUST_AIM_POWER                = 0x00000800,           // Lua_IsVehicleAimPowerAdjustable
++    VEHICLE_FLAG_FIXED_POSITION                  = 0x00200000            // Used for cannons, when they should be rooted
+ };
+ 
+ enum VehicleSpells
+diff --git a/src/server/game/Globals/ObjectMgr.h b/src/server/game/Globals/ObjectMgr.h
+index 28b13f10c..126385188 100644
+--- a/src/server/game/Globals/ObjectMgr.h
++++ b/src/server/game/Globals/ObjectMgr.h
+@@ -865,6 +865,7 @@ public:
+         return nullptr;
+     }
+ 
++    [[nodiscard]] AreaTriggerTeleportContainer const& GetAllAreaTriggerTeleports() const { return _areaTriggerTeleportStore; }
+     [[nodiscard]] AreaTriggerTeleport const* GetAreaTriggerTeleport(uint32 trigger) const
+     {
+         AreaTriggerTeleportContainer::const_iterator itr = _areaTriggerTeleportStore.find(trigger);
+diff --git a/src/server/game/Groups/Group.h b/src/server/game/Groups/Group.h
+index 5c387274e..cd949d3f5 100644
+--- a/src/server/game/Groups/Group.h
++++ b/src/server/game/Groups/Group.h
+@@ -44,7 +44,7 @@ struct MapEntry;
+ #define MAX_RAID_SUBGROUPS MAXRAIDSIZE/MAXGROUPSIZE
+ #define TARGETICONCOUNT 8
+ 
+-enum RollVote
++enum RollVote : uint32
+ {
+     PASS              = 0,
+     NEED              = 1,
+@@ -258,6 +258,8 @@ public:
+     void SetGroupMemberFlag(ObjectGuid guid, bool apply, GroupMemberFlags flag);
+     void RemoveUniqueGroupMemberFlag(GroupMemberFlags flag);
+ 
++    ObjectGuid const GetTargetIcon(uint8 id) const { return m_targetIcons[id]; }
++
+     Difficulty GetDifficulty(bool isRaid) const;
+     Difficulty GetDungeonDifficulty() const;
+     Difficulty GetRaidDifficulty() const;
+@@ -296,6 +298,8 @@ public:
+     bool CountRollVote(ObjectGuid playerGUID, ObjectGuid Guid, uint8 Choise);
+     void EndRoll(Loot* loot, Map* allowedMap);
+ 
++    Rolls GetRolls() const { return RollId; }
++
+     // related to disenchant rolls
+     void ResetMaxEnchantingLevel();
+ 
+diff --git a/src/server/game/Guilds/Guild.cpp b/src/server/game/Guilds/Guild.cpp
+index 849f75487..d17813508 100644
+--- a/src/server/game/Guilds/Guild.cpp
++++ b/src/server/game/Guilds/Guild.cpp
+@@ -830,7 +830,7 @@ bool Guild::BankMoveItemData::HasStoreRights(MoveItemData* pOther) const
+     // Do not check rights if item is being swapped within the same bank tab
+     if (pOther->IsBank() && pOther->GetContainer() == m_container)
+         return true;
+-    return m_pGuild->_MemberHasTabRights(m_pPlayer->GetGUID(), m_container, GUILD_BANK_RIGHT_DEPOSIT_ITEM);
++    return m_pGuild->MemberHasTabRights(m_pPlayer->GetGUID(), m_container, GUILD_BANK_RIGHT_DEPOSIT_ITEM);
+ }
+ 
+ bool Guild::BankMoveItemData::HasWithdrawRights(MoveItemData* pOther) const
+@@ -1214,7 +1214,7 @@ void Guild::HandleRoster(WorldSession* session)
+         }
+     }
+ 
+-    bool sendOfficerNote = _HasRankRight(session->GetPlayer(), GR_RIGHT_VIEWOFFNOTE);
++    bool sendOfficerNote = HasRankRight(session->GetPlayer(), GR_RIGHT_VIEWOFFNOTE);
+     for (auto const& [guid, member] : m_members)
+     {
+         WorldPackets::Guild::GuildRosterMemberData& memberData = roster.MemberData.emplace_back();
+@@ -1270,7 +1270,7 @@ void Guild::HandleSetMOTD(WorldSession* session, std::string_view motd)
+         return;
+ 
+     // Player must have rights to set MOTD
+-    if (!_HasRankRight(session->GetPlayer(), GR_RIGHT_SETMOTD))
++    if (!HasRankRight(session->GetPlayer(), GR_RIGHT_SETMOTD))
+         SendCommandResult(session, GUILD_COMMAND_EDIT_MOTD, ERR_GUILD_PERMISSIONS);
+     else
+     {
+@@ -1293,7 +1293,7 @@ void Guild::HandleSetInfo(WorldSession* session, std::string_view info)
+         return;
+ 
+     // Player must have rights to set guild's info
+-    if (_HasRankRight(session->GetPlayer(), GR_RIGHT_MODIFY_GUILD_INFO))
++    if (HasRankRight(session->GetPlayer(), GR_RIGHT_MODIFY_GUILD_INFO))
+     {
+         m_info = info;
+ 
+@@ -1326,6 +1326,12 @@ void Guild::HandleSetEmblem(WorldSession* session, const EmblemInfo& emblemInfo)
+     }
+ }
+ 
++void Guild::HandleSetEmblem(EmblemInfo const& emblemInfo)
++{
++    m_emblemInfo = emblemInfo;
++    m_emblemInfo.SaveToDB(m_id);
++}
++
+ void Guild::HandleSetLeader(WorldSession* session, std::string_view name)
+ {
+     Player* player = session->GetPlayer();
+@@ -1362,7 +1368,7 @@ void Guild::HandleSetBankTabInfo(WorldSession* session, uint8 tabId, std::string
+ void Guild::HandleSetMemberNote(WorldSession* session, std::string_view name, std::string_view note, bool isPublic)
+ {
+     // Player must have rights to set public/officer note
+-    if (!_HasRankRight(session->GetPlayer(), isPublic ? GR_RIGHT_EPNOTE : GR_RIGHT_EOFFNOTE))
++    if (!HasRankRight(session->GetPlayer(), isPublic ? GR_RIGHT_EPNOTE : GR_RIGHT_EOFFNOTE))
+         SendCommandResult(session, GUILD_COMMAND_PUBLIC_NOTE, ERR_GUILD_PERMISSIONS);
+     else if (Member* member = GetMember(name))
+     {
+@@ -1395,6 +1401,29 @@ void Guild::HandleSetRankInfo(WorldSession* session, uint8 rankId, std::string_v
+     }
+ }
+ 
++void Guild::HandleSetRankInfo(uint8 rankId, uint32 rights, std::string_view name, uint32 moneyPerDay)
++{
++    if (RankInfo* rankInfo = GetRankInfo(rankId))
++    {
++        if (!name.empty())
++        {
++            rankInfo->SetName(name);
++        }
++
++        if (rights > 0)
++        {
++            rankInfo->SetRights(rights);
++        }
++
++        if (moneyPerDay > 0)
++        {
++            _SetRankBankMoneyPerDay(rankId, moneyPerDay);
++        }
++
++        _BroadcastEvent(GE_RANK_UPDATED, ObjectGuid::Empty, std::to_string(rankId), rankInfo->GetName(), std::to_string(m_ranks.size()));
++    }
++}
++
+ void Guild::HandleBuyBankTab(WorldSession* session, uint8 tabId)
+ {
+     Player* player = session->GetPlayer();
+@@ -1457,7 +1486,7 @@ void Guild::HandleInviteMember(WorldSession* session, std::string const& name)
+         return;
+     }
+     // Inviting player must have rights to invite
+-    if (!_HasRankRight(player, GR_RIGHT_INVITE))
++    if (!HasRankRight(player, GR_RIGHT_INVITE))
+     {
+         SendCommandResult(session, GUILD_COMMAND_INVITE, ERR_GUILD_PERMISSIONS);
+         return;
+@@ -1528,7 +1557,7 @@ void Guild::HandleRemoveMember(WorldSession* session, std::string_view name)
+ {
+     Player* player = session->GetPlayer();
+     // Player must have rights to remove members
+-    if (!_HasRankRight(player, GR_RIGHT_REMOVE))
++    if (!HasRankRight(player, GR_RIGHT_REMOVE))
+         SendCommandResult(session, GUILD_COMMAND_REMOVE, ERR_GUILD_PERMISSIONS);
+     else if (Member* member = GetMember(name))
+     {
+@@ -1558,7 +1587,7 @@ void Guild::HandleUpdateMemberRank(WorldSession* session, std::string_view name,
+     Player* player = session->GetPlayer();
+     GuildCommandType type = demote ? GUILD_COMMAND_DEMOTE : GUILD_COMMAND_PROMOTE;
+     // Player must have rights to promote
+-    if (!_HasRankRight(player, demote ? GR_RIGHT_DEMOTE : GR_RIGHT_PROMOTE))
++    if (!HasRankRight(player, demote ? GR_RIGHT_DEMOTE : GR_RIGHT_PROMOTE))
+         SendCommandResult(session, type, ERR_GUILD_PERMISSIONS);
+     // Promoted player must be a member of guild
+     else if (Member* member = GetMember(name))
+@@ -1831,7 +1860,7 @@ void Guild::SendPermissions(WorldSession* session)
+     WorldPackets::Guild::GuildPermissionsQueryResults queryResult;
+     queryResult.RankID = rankId;
+     queryResult.WithdrawGoldLimit = _GetRankBankMoneyPerDay(rankId);
+-    queryResult.Flags = _GetRankRights(rankId);
++    queryResult.Flags = GetRankRights(rankId);
+     queryResult.NumTabs = _GetPurchasedTabsSize();
+ 
+     for (uint8 tabId = 0; tabId < GUILD_BANK_MAX_TABS; ++tabId)
+@@ -2097,13 +2126,13 @@ bool Guild::Validate()
+ // Broadcasts
+ void Guild::BroadcastToGuild(WorldSession* session, bool officerOnly, std::string_view msg, uint32 language) const
+ {
+-    if (session && session->GetPlayer() && _HasRankRight(session->GetPlayer(), officerOnly ? GR_RIGHT_OFFCHATSPEAK : GR_RIGHT_GCHATSPEAK))
++    if (session && session->GetPlayer() && HasRankRight(session->GetPlayer(), officerOnly ? GR_RIGHT_OFFCHATSPEAK : GR_RIGHT_GCHATSPEAK))
+     {
+         WorldPacket data;
+         ChatHandler::BuildChatPacket(data, officerOnly ? CHAT_MSG_OFFICER : CHAT_MSG_GUILD, Language(language), session->GetPlayer(), nullptr, msg);
+         for (auto const& [guid, member] : m_members)
+             if (Player* player = member.FindPlayer())
+-                if (_HasRankRight(player, officerOnly ? GR_RIGHT_OFFCHATLISTEN : GR_RIGHT_GCHATLISTEN) && !player->GetSocial()->HasIgnore(session->GetPlayer()->GetGUID()))
++                if (HasRankRight(player, officerOnly ? GR_RIGHT_OFFCHATLISTEN : GR_RIGHT_GCHATLISTEN) && !player->GetSocial()->HasIgnore(session->GetPlayer()->GetGUID()))
+                     player->GetSession()->SendPacket(&data);
+     }
+ }
+@@ -2506,7 +2535,7 @@ inline std::string Guild::_GetRankName(uint8 rankId) const
+     return "<unknown>";
+ }
+ 
+-inline uint32 Guild::_GetRankRights(uint8 rankId) const
++uint32 Guild::GetRankRights(uint8 rankId) const
+ {
+     if (const RankInfo* rankInfo = GetRankInfo(rankId))
+         return rankInfo->GetRights();
+@@ -2555,7 +2584,7 @@ inline int32 Guild::_GetMemberRemainingMoney(Member const& member) const
+     if (rankId == GR_GUILDMASTER)
+         return static_cast<int32>(GUILD_WITHDRAW_MONEY_UNLIMITED);
+ 
+-    if ((_GetRankRights(rankId) & (GR_RIGHT_WITHDRAW_REPAIR | GR_RIGHT_WITHDRAW_GOLD)) != 0)
++    if ((GetRankRights(rankId) & (GR_RIGHT_WITHDRAW_REPAIR | GR_RIGHT_WITHDRAW_GOLD)) != 0)
+     {
+         int32 remaining = _GetRankBankMoneyPerDay(rankId) - member.GetBankWithdrawValue(GUILD_BANK_MAX_TABS);
+         if (remaining > 0)
+@@ -2575,7 +2604,7 @@ inline void Guild::_UpdateMemberWithdrawSlots(CharacterDatabaseTransaction trans
+     }
+ }
+ 
+-inline bool Guild::_MemberHasTabRights(ObjectGuid guid, uint8 tabId, uint32 rights) const
++bool Guild::MemberHasTabRights(ObjectGuid guid, uint8 tabId, uint32 rights) const
+ {
+     if (const Member* member = GetMember(guid))
+     {
+@@ -2587,6 +2616,19 @@ inline bool Guild::_MemberHasTabRights(ObjectGuid guid, uint8 tabId, uint32 righ
+     return false;
+ }
+ 
++bool Guild::HasRankRight(Player* player, uint32 right) const
++{
++    if (player)
++    {
++        if (Member const* member = GetMember(player->GetGUID()))
++        {
++            return (GetRankRights(member->GetRankId()) & right) != GR_RIGHT_EMPTY;
++        }
++    }
++
++    return false;
++}
++
+ // Add new event log record
+ inline void Guild::_LogEvent(GuildEventLogTypes eventType, ObjectGuid playerGuid1, ObjectGuid playerGuid2, uint8 newRank)
+ {
+@@ -2732,7 +2774,7 @@ bool Guild::_DoItemsMove(MoveItemData* pSrc, MoveItemData* pDest, bool sendError
+ void Guild::_SendBankContent(WorldSession* session, uint8 tabId, bool sendAllSlots) const
+ {
+     ObjectGuid guid = session->GetPlayer()->GetGUID();
+-    if (!_MemberHasTabRights(guid, tabId, GUILD_BANK_RIGHT_VIEW_TAB))
++    if (!MemberHasTabRights(guid, tabId, GUILD_BANK_RIGHT_VIEW_TAB))
+         return;
+ 
+     _SendBankList(session, tabId, sendAllSlots);
+@@ -2895,7 +2937,7 @@ void Guild::_SendBankList(WorldSession* session /* = nullptr*/, uint8 tabId /*=
+             if (!member.ShouldReceiveBankPartialUpdatePackets())
+                 continue;
+ 
+-            if (!_MemberHasTabRights(member.GetGUID(), tabId, GUILD_BANK_RIGHT_VIEW_TAB))
++            if (!MemberHasTabRights(member.GetGUID(), tabId, GUILD_BANK_RIGHT_VIEW_TAB))
+                 continue;
+ 
+             Player* player = member.FindPlayer();
+diff --git a/src/server/game/Guilds/Guild.h b/src/server/game/Guilds/Guild.h
+index a4d873235..0c2e0450c 100644
+--- a/src/server/game/Guilds/Guild.h
++++ b/src/server/game/Guilds/Guild.h
+@@ -241,7 +241,8 @@ enum GuildMemberFlags
+ class EmblemInfo
+ {
+ public:
+-    EmblemInfo() : m_style(0), m_color(0), m_borderStyle(0), m_borderColor(0), m_backgroundColor(0) { }
++    EmblemInfo(uint32 style = 0, uint32 color = 0, uint32 borderStyle = 0, uint32 borderColor = 0, uint32 backgroundColor = 0) :
++        m_style(0), m_color(0), m_borderStyle(0), m_borderColor(0), m_backgroundColor(0) { }
+ 
+     void LoadFromDB(Field* fields);
+     void SaveToDB(uint32 guildId) const;
+@@ -699,11 +700,13 @@ public:
+     void HandleQuery(WorldSession* session);
+     void HandleSetMOTD(WorldSession* session, std::string_view motd);
+     void HandleSetInfo(WorldSession* session, std::string_view info);
+-    void HandleSetEmblem(WorldSession* session, const EmblemInfo& emblemInfo);
++    void HandleSetEmblem(WorldSession* session, EmblemInfo const& emblemInfo);
++    void HandleSetEmblem(EmblemInfo const& emblemInfo);
+     void HandleSetLeader(WorldSession* session, std::string_view name);
+     void HandleSetBankTabInfo(WorldSession* session, uint8 tabId, std::string_view name, std::string_view icon);
+     void HandleSetMemberNote(WorldSession* session, std::string_view name, std::string_view note, bool officer);
+     void HandleSetRankInfo(WorldSession* session, uint8 rankId, std::string_view name, uint32 rights, uint32 moneyPerDay, std::array<GuildBankRightsAndSlots, GUILD_BANK_MAX_TABS> const& rightsAndSlots);
++    void HandleSetRankInfo(uint8 rankId, uint32 rights = 0, std::string_view name = "", uint32 moneyPerDay = 0);
+     void HandleBuyBankTab(WorldSession* session, uint8 tabId);
+     void HandleInviteMember(WorldSession* session, std::string const& name);
+     void HandleAcceptMember(WorldSession* session);
+@@ -782,6 +785,10 @@ public:
+     [[nodiscard]] bool ModifyBankMoney(CharacterDatabaseTransaction trans, const uint64& amount, bool add) { return _ModifyBankMoney(trans, amount, add); }
+     [[nodiscard]] uint32 GetMemberSize() const { return m_members.size(); }
+ 
++    bool MemberHasTabRights(ObjectGuid guid, uint8 tabId, uint32 rights) const;
++    bool HasRankRight(Player* player, uint32 right) const;
++    uint32 GetRankRights(uint8 rankId) const;
++
+ protected:
+     uint32 m_id;
+     std::string m_name;
+@@ -806,13 +813,6 @@ private:
+     inline uint8 _GetRanksSize() const { return uint8(m_ranks.size()); }
+     inline const RankInfo* GetRankInfo(uint8 rankId) const { return rankId < _GetRanksSize() ? &m_ranks[rankId] : nullptr; }
+     inline RankInfo* GetRankInfo(uint8 rankId) { return rankId < _GetRanksSize() ? &m_ranks[rankId] : nullptr; }
+-    inline bool _HasRankRight(Player* player, uint32 right) const
+-    {
+-        if (player)
+-            if (Member const* member = GetMember(player->GetGUID()))
+-                return (_GetRankRights(member->GetRankId()) & right) != GR_RIGHT_EMPTY;
+-        return false;
+-    }
+ 
+     inline uint8 _GetLowestRankId() const { return uint8(m_ranks.size() - 1); }
+ 
+@@ -843,7 +843,6 @@ private:
+     void _SetRankBankMoneyPerDay(uint8 rankId, uint32 moneyPerDay);
+     void _SetRankBankTabRightsAndSlots(uint8 rankId, GuildBankRightsAndSlots rightsAndSlots, bool saveToDB = true);
+     int8 _GetRankBankTabRights(uint8 rankId, uint8 tabId) const;
+-    uint32 _GetRankRights(uint8 rankId) const;
+     int32 _GetRankBankMoneyPerDay(uint8 rankId) const;
+     int32 _GetRankBankTabSlotsPerDay(uint8 rankId, uint8 tabId) const;
+     std::string _GetRankName(uint8 rankId) const;
+@@ -851,7 +850,6 @@ private:
+     int32 _GetMemberRemainingSlots(Member const& member, uint8 tabId) const;
+     int32 _GetMemberRemainingMoney(Member const& member) const;
+     void _UpdateMemberWithdrawSlots(CharacterDatabaseTransaction trans, ObjectGuid guid, uint8 tabId);
+-    bool _MemberHasTabRights(ObjectGuid guid, uint8 tabId, uint32 rights) const;
+ 
+     void _LogEvent(GuildEventLogTypes eventType, ObjectGuid playerGuid1, ObjectGuid playerGuid2 = ObjectGuid::Empty, uint8 newRank = 0);
+     void _LogBankEvent(CharacterDatabaseTransaction trans, GuildBankEventLogTypes eventType, uint8 tabId, ObjectGuid playerGuid, uint32 itemOrMoney, uint16 itemStackCount = 0, uint8 destTabId = 0);
+diff --git a/src/server/game/Handlers/CharacterHandler.cpp b/src/server/game/Handlers/CharacterHandler.cpp
+index 55fd51650..5738cdf81 100644
+--- a/src/server/game/Handlers/CharacterHandler.cpp
++++ b/src/server/game/Handlers/CharacterHandler.cpp
+@@ -59,19 +59,9 @@
+ #include "WorldPacket.h"
+ #include "WorldSession.h"
+ 
+-class LoginQueryHolder : public CharacterDatabaseQueryHolder
++LoginQueryHolder::LoginQueryHolder(uint32 accountId, ObjectGuid guid) : m_accountId(accountId), m_guid(guid)
+ {
+-private:
+-    uint32 m_accountId;
+-    ObjectGuid m_guid;
+-public:
+-    LoginQueryHolder(uint32 accountId, ObjectGuid guid)
+-        : m_accountId(accountId), m_guid(guid) { }
+-
+-    ObjectGuid GetGuid() const { return m_guid; }
+-    uint32 GetAccountId() const { return m_accountId; }
+-    bool Initialize();
+-};
++}
+ 
+ bool LoginQueryHolder::Initialize()
+ {
+@@ -561,7 +551,12 @@ void WorldSession::HandleCharCreateOpcode(WorldPacket& recvData)
+             newChar->SaveToDB(characterTransaction, true, false);
+             createInfo->CharCount++;
+ 
+-            LoginDatabasePreparedStatement* stmt = LoginDatabase.GetPreparedStatement(LOGIN_REP_REALM_CHARACTERS);
++            LoginDatabasePreparedStatement* stmt = LoginDatabase.GetPreparedStatement(LOGIN_DEL_REALM_CHARACTERS_BY_REALM);
++            stmt->SetData(0, GetAccountId());
++            stmt->SetData(1, realm.Id.Realm);
++            trans->Append(stmt);
++
++            stmt = LoginDatabase.GetPreparedStatement(LOGIN_REP_REALM_CHARACTERS);
+             stmt->SetData(0, createInfo->CharCount);
+             stmt->SetData(1, GetAccountId());
+             stmt->SetData(2, realm.Id.Realm);
+@@ -898,8 +893,7 @@ void WorldSession::HandlePlayerLoginFromDB(LoginQueryHolder const& holder)
+     CharacterDatabase.Execute(stmt);
+ 
+     LoginDatabasePreparedStatement* loginStmt = LoginDatabase.GetPreparedStatement(LOGIN_UPD_ACCOUNT_ONLINE);
+-    loginStmt->SetData(0, realm.Id.Realm);
+-    loginStmt->SetData(1, GetAccountId());
++    loginStmt->SetData(0, GetAccountId());
+     LoginDatabase.Execute(loginStmt);
+ 
+     pCurrChar->SetInGameTime(GameTime::GetGameTimeMS().count());
+diff --git a/src/server/game/Handlers/ChatHandler.cpp b/src/server/game/Handlers/ChatHandler.cpp
+index 3d1af0d8b..dbb4120bc 100644
+--- a/src/server/game/Handlers/ChatHandler.cpp
++++ b/src/server/game/Handlers/ChatHandler.cpp
+@@ -406,6 +406,13 @@ void WorldSession::HandleMessagechatOpcode(WorldPacket& recvData)
+                 if (!senderIsPlayer && !sender->isAcceptWhispers() && !sender->IsInWhisperWhiteList(receiver->GetGUID()))
+                     sender->AddWhisperWhiteList(receiver->GetGUID());
+ 
++                if (!sScriptMgr->CanPlayerUseChat(GetPlayer(), type, lang, msg, receiver))
++                {
++                    return;
++                }
++
++                sScriptMgr->OnPlayerChat(GetPlayer(), type, lang, msg, receiver);
++
+                 GetPlayer()->Whisper(msg, Language(lang), receiver);
+             }
+             break;
+@@ -451,6 +458,10 @@ void WorldSession::HandleMessagechatOpcode(WorldPacket& recvData)
+ 
+                         guild->BroadcastToGuild(this, false, msg, lang == LANG_ADDON ? LANG_ADDON : LANG_UNIVERSAL);
+                     }
++                    else
++                    {
++                        sScriptMgr->OnPlayerChat(GetPlayer(), type, lang, msg);
++                    }
+                 }
+             }
+             break;
+diff --git a/src/server/game/Handlers/PetitionsHandler.cpp b/src/server/game/Handlers/PetitionsHandler.cpp
+index e8cc33152..93e028069 100644
+--- a/src/server/game/Handlers/PetitionsHandler.cpp
++++ b/src/server/game/Handlers/PetitionsHandler.cpp
+@@ -477,6 +477,8 @@ void WorldSession::HandlePetitionSignOpcode(WorldPacket& recvData)
+             break;
+         }
+ 
++    sScriptMgr->OnPlayerbotCheckPetitionAccount(_player, found);
++
+     if (found)
+     {
+         WorldPacket data(SMSG_PETITION_SIGN_RESULTS, (8 + 8 + 4));
+diff --git a/src/server/game/Maps/Map.cpp b/src/server/game/Maps/Map.cpp
+index 1fb51a577..16f673dcd 100644
+--- a/src/server/game/Maps/Map.cpp
++++ b/src/server/game/Maps/Map.cpp
+@@ -2610,6 +2610,12 @@ void Map::SendObjectUpdates()
+     WorldPacket packet;                                     // here we allocate a std::vector with a size of 0x10000
+     for (UpdateDataMapType::iterator iter = update_players.begin(); iter != update_players.end(); ++iter)
+     {
++        if (!sScriptMgr->OnPlayerbotCheckUpdatesToSend(iter->first))
++        {
++            iter->second.Clear();
++            continue;
++        }
++
+         iter->second.BuildPacket(&packet);
+         iter->first->GetSession()->SendPacket(&packet);
+         packet.clear();                                     // clean the string
+diff --git a/src/server/game/Misc/GameGraveyard.cpp b/src/server/game/Misc/GameGraveyard.cpp
+index 5552a05fd..37a20bc7e 100644
+--- a/src/server/game/Misc/GameGraveyard.cpp
++++ b/src/server/game/Misc/GameGraveyard.cpp
+@@ -119,6 +119,11 @@ GraveyardStruct const* Graveyard::GetClosestGraveyard(Player* player, TeamId tea
+     uint32 areaId = 0;
+     player->GetZoneAndAreaId(zoneId, areaId);
+ 
++    return GetClosestGraveyard(mapId, x, y, z, teamId, areaId, zoneId, player->getClass() == CLASS_DEATH_KNIGHT);
++}
++
++GraveyardStruct const* Graveyard::GetClosestGraveyard(uint32 mapId, float x, float y, float z, TeamId teamId, uint32 areaId, uint32 zoneId, bool isDeathKnight)
++{
+     if (!zoneId && !areaId)
+     {
+         if (z > -500)
+@@ -202,7 +207,7 @@ GraveyardStruct const* Graveyard::GetClosestGraveyard(Player* player, TeamId tea
+             GRAVEYARD_ARCHERUS  = 1405
+         };
+ 
+-        if (player->getClass() != CLASS_DEATH_KNIGHT && (graveyardLink.safeLocId == GRAVEYARD_EBON_HOLD || graveyardLink.safeLocId == GRAVEYARD_ARCHERUS))
++        if (!isDeathKnight && (graveyardLink.safeLocId == GRAVEYARD_EBON_HOLD || graveyardLink.safeLocId == GRAVEYARD_ARCHERUS))
+         {
+             continue;
+         }
+diff --git a/src/server/game/Misc/GameGraveyard.h b/src/server/game/Misc/GameGraveyard.h
+index 35092818b..0349f558b 100644
+--- a/src/server/game/Misc/GameGraveyard.h
++++ b/src/server/game/Misc/GameGraveyard.h
+@@ -58,6 +58,7 @@ public:
+     GraveyardStruct const* GetGraveyard(const std::string& name) const;
+     GraveyardStruct const* GetDefaultGraveyard(TeamId teamId);
+     GraveyardStruct const* GetClosestGraveyard(Player* player, TeamId teamId, bool nearCorpse = false);
++    GraveyardStruct const* GetClosestGraveyard(uint32 mapId, float x, float y, float z, TeamId teamId, uint32 areaId, uint32 zoneId, bool isDeathKnight);
+     GraveyardData const* FindGraveyardData(uint32 id, uint32 zone);
+     GraveyardContainer const& GetGraveyardData() const { return _graveyardStore; }
+     bool AddGraveyardLink(uint32 id, uint32 zoneId, TeamId teamId, bool persist = true);
+diff --git a/src/server/game/Scripting/ScriptDefines/DatabaseScript.cpp b/src/server/game/Scripting/ScriptDefines/DatabaseScript.cpp
+index b4debdf2f..c3f92c583 100644
+--- a/src/server/game/Scripting/ScriptDefines/DatabaseScript.cpp
++++ b/src/server/game/Scripting/ScriptDefines/DatabaseScript.cpp
+@@ -18,6 +18,21 @@
+ #include "ScriptMgr.h"
+ #include "ScriptMgrMacros.h"
+ 
++bool ScriptMgr::OnDatabasesLoading()
++{
++    auto ret = IsValidBoolScript<DatabaseScript>([&](DatabaseScript* script)
++    {
++        return !script->OnDatabasesLoading();
++    });
++
++    if (ret && *ret)
++    {
++        return false;
++    }
++
++    return true;
++}
++
+ void ScriptMgr::OnAfterDatabasesLoaded(uint32 updateFlags)
+ {
+     ExecuteScript<DatabaseScript>([&](DatabaseScript* script)
+@@ -25,3 +40,43 @@ void ScriptMgr::OnAfterDatabasesLoaded(uint32 updateFlags)
+         script->OnAfterDatabasesLoaded(updateFlags);
+     });
+ }
++
++void ScriptMgr::OnDatabasesKeepAlive()
++{
++    ExecuteScript<DatabaseScript>([&](DatabaseScript* script)
++    {
++        script->OnDatabasesKeepAlive();
++    });
++}
++
++void ScriptMgr::OnDatabasesClosing()
++{
++    ExecuteScript<DatabaseScript>([&](DatabaseScript* script)
++    {
++        script->OnDatabasesClosing();
++    });
++}
++
++void ScriptMgr::OnDatabaseWarnAboutSyncQueries(bool apply)
++{
++    ExecuteScript<DatabaseScript>([&](DatabaseScript* script)
++    {
++        script->OnDatabaseWarnAboutSyncQueries(apply);
++    });
++}
++
++void ScriptMgr::OnDatabaseSelectIndexLogout(Player* player, uint32& statementIndex, uint32& statementParam)
++{
++    ExecuteScript<DatabaseScript>([&](DatabaseScript* script)
++    {
++        script->OnDatabaseSelectIndexLogout(player, statementIndex, statementParam);
++    });
++}
++
++void ScriptMgr::OnDatabaseGetDBRevision(std::string& revision)
++{
++    ExecuteScript<DatabaseScript>([&](DatabaseScript* script)
++    {
++        script->OnDatabaseGetDBRevision(revision);
++    });
++}
+diff --git a/src/server/game/Scripting/ScriptDefines/MetricScript.cpp b/src/server/game/Scripting/ScriptDefines/MetricScript.cpp
+new file mode 100644
+index 000000000..a9de340a0
+--- /dev/null
++++ b/src/server/game/Scripting/ScriptDefines/MetricScript.cpp
+@@ -0,0 +1,27 @@
++/*
++ * This file is part of the AzerothCore Project. See AUTHORS file for Copyright information
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU Affero General Public License as published by the
++ * Free Software Foundation; either version 3 of the License, or (at your
++ * option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "ScriptMgr.h"
++#include "ScriptMgrMacros.h"
++
++void ScriptMgr::OnMetricLogging()
++{
++    ExecuteScript<MetricScript>([&](MetricScript* script)
++    {
++        script->OnMetricLogging();
++    });
++}
+diff --git a/src/server/game/Scripting/ScriptDefines/PlayerScript.cpp b/src/server/game/Scripting/ScriptDefines/PlayerScript.cpp
+index 2434ac25f..388771236 100644
+--- a/src/server/game/Scripting/ScriptDefines/PlayerScript.cpp
++++ b/src/server/game/Scripting/ScriptDefines/PlayerScript.cpp
+@@ -313,6 +313,14 @@ void ScriptMgr::OnPlayerUpdate(Player* player, uint32 p_time)
+     });
+ }
+ 
++void ScriptMgr::OnAfterPlayerUpdate(Player* player, uint32 diff)
++{
++    ExecuteScript<PlayerScript>([&](PlayerScript* script)
++    {
++        script->OnAfterUpdate(player, diff);
++    });
++}
++
+ void ScriptMgr::OnPlayerLogin(Player* player)
+ {
+     ExecuteScript<PlayerScript>([&](PlayerScript* script)
+diff --git a/src/server/game/Scripting/ScriptDefines/PlayerbotsScript.cpp b/src/server/game/Scripting/ScriptDefines/PlayerbotsScript.cpp
+new file mode 100644
+index 000000000..c180888bd
+--- /dev/null
++++ b/src/server/game/Scripting/ScriptDefines/PlayerbotsScript.cpp
+@@ -0,0 +1,105 @@
++/*
++ * This file is part of the AzerothCore Project. See AUTHORS file for Copyright information
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU Affero General Public License as published by the
++ * Free Software Foundation; either version 3 of the License, or (at your
++ * option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "ScriptMgr.h"
++#include "ScriptMgrMacros.h"
++
++bool ScriptMgr::OnPlayerbotCheckLFGQueue(lfg::Lfg5Guids const& guidsList)
++{
++    auto ret = IsValidBoolScript<PlayerbotScript>([&](PlayerbotScript* script)
++    {
++        return !script->OnPlayerbotCheckLFGQueue(guidsList);
++    });
++
++    if (ret && *ret)
++    {
++        return false;
++    }
++
++    return true;
++}
++
++void ScriptMgr::OnPlayerbotCheckKillTask(Player* player, Unit* victim)
++{
++    ExecuteScript<PlayerbotScript>([&](PlayerbotScript* script)
++    {
++        script->OnPlayerbotCheckKillTask(player, victim);
++    });
++}
++
++void ScriptMgr::OnPlayerbotCheckPetitionAccount(Player* player, bool& found)
++{
++    ExecuteScript<PlayerbotScript>([&](PlayerbotScript* script)
++    {
++        script->OnPlayerbotCheckPetitionAccount(player, found);
++    });
++}
++
++bool ScriptMgr::OnPlayerbotCheckUpdatesToSend(Player* player)
++{
++    auto ret = IsValidBoolScript<PlayerbotScript>([&](PlayerbotScript* script)
++    {
++        return !script->OnPlayerbotCheckUpdatesToSend(player);
++    });
++
++    if (ret && *ret)
++    {
++        return false;
++    }
++
++    return true;
++}
++
++void ScriptMgr::OnPlayerbotPacketSent(Player* player, WorldPacket const* packet)
++{
++    ExecuteScript<PlayerbotScript>([&](PlayerbotScript* script)
++    {
++        script->OnPlayerbotPacketSent(player, packet);
++    });
++}
++
++void ScriptMgr::OnPlayerbotUpdate(uint32 diff)
++{
++    ExecuteScript<PlayerbotScript>([&](PlayerbotScript* script)
++    {
++        script->OnPlayerbotUpdate(diff);
++    });
++}
++
++void ScriptMgr::OnPlayerbotUpdateSessions(Player* player)
++{
++    ExecuteScript<PlayerbotScript>([&](PlayerbotScript* script)
++    {
++        script->OnPlayerbotUpdateSessions(player);
++    });
++}
++
++void ScriptMgr::OnPlayerbotLogout(Player* player)
++{
++    ExecuteScript<PlayerbotScript>([&](PlayerbotScript* script)
++    {
++        script->OnPlayerbotLogout(player);
++    });
++}
++
++void ScriptMgr::OnPlayerbotLogoutBots()
++{
++    ExecuteScript<PlayerbotScript>([&](PlayerbotScript* script)
++    {
++        script->OnPlayerbotLogoutBots();
++    });
++}
+diff --git a/src/server/game/Scripting/ScriptDefines/ServerScript.cpp b/src/server/game/Scripting/ScriptDefines/ServerScript.cpp
+index ca8f7cf67..9e10e12c3 100644
+--- a/src/server/game/Scripting/ScriptDefines/ServerScript.cpp
++++ b/src/server/game/Scripting/ScriptDefines/ServerScript.cpp
+@@ -74,6 +74,15 @@ bool ScriptMgr::CanPacketReceive(WorldSession* session, WorldPacket const& packe
+     return true;
+ }
+ 
++void ScriptMgr::OnPacketReceived(WorldSession* session, WorldPacket const& packet)
++{
++    WorldPacket copy(packet);
++    ExecuteScript<ServerScript>([&](ServerScript* script)
++    {
++        script->OnPacketReceived(session, copy);
++    });
++}
++
+ bool ScriptMgr::CanPacketSend(WorldSession* session, WorldPacket const& packet)
+ {
+     ASSERT(session);
+diff --git a/src/server/game/Scripting/ScriptMgr.cpp b/src/server/game/Scripting/ScriptMgr.cpp
+index 244364cc3..f8ec2bb53 100644
+--- a/src/server/game/Scripting/ScriptMgr.cpp
++++ b/src/server/game/Scripting/ScriptMgr.cpp
+@@ -106,11 +106,13 @@ void ScriptMgr::Unload()
+     SCR_CLEAR<ItemScript>();
+     SCR_CLEAR<LootScript>();
+     SCR_CLEAR<MailScript>();
++    SCR_CLEAR<MetricScript>();
+     SCR_CLEAR<MiscScript>();
+     SCR_CLEAR<MovementHandlerScript>();
+     SCR_CLEAR<OutdoorPvPScript>();
+     SCR_CLEAR<PetScript>();
+     SCR_CLEAR<PlayerScript>();
++    SCR_CLEAR<PlayerbotScript>();
+     SCR_CLEAR<ServerScript>();
+     SCR_CLEAR<SpellSC>();
+     SCR_CLEAR<SpellScriptLoader>();
+@@ -193,7 +195,9 @@ void ScriptMgr::CheckIfScriptsInDatabaseExist()
+                 !ScriptRegistry<CommandSC>::GetScriptById(sid) &&
+                 !ScriptRegistry<ArenaScript>::GetScriptById(sid) &&
+                 !ScriptRegistry<GroupScript>::GetScriptById(sid) &&
+-                !ScriptRegistry<DatabaseScript>::GetScriptById(sid))
++                !ScriptRegistry<DatabaseScript>::GetScriptById(sid) &&
++                !ScriptRegistry<MetricScript>::GetScriptById(sid) &&
++                !ScriptRegistry<PlayerbotScript>::GetScriptById(sid))
+                 {
+                     LOG_ERROR("sql.sql", "Script named '{}' is assigned in the database, but has no code!", scriptName);
+                 }
+@@ -596,6 +600,16 @@ AllGameObjectScript::AllGameObjectScript(const char* name) : ScriptObject(name)
+     ScriptRegistry<AllGameObjectScript>::AddScript(this);
+ }
+ 
++MetricScript::MetricScript(const char* name) : ScriptObject(name)
++{
++    ScriptRegistry<MetricScript>::AddScript(this);
++}
++
++PlayerbotScript::PlayerbotScript(const char* name) : ScriptObject(name)
++{
++    ScriptRegistry<PlayerbotScript>::AddScript(this);
++}
++
+ // Specialize for each script type class like so:
+ template class AC_GAME_API ScriptRegistry<AccountScript>;
+ template class AC_GAME_API ScriptRegistry<AchievementCriteriaScript>;
+@@ -628,11 +642,13 @@ template class AC_GAME_API ScriptRegistry<InstanceMapScript>;
+ template class AC_GAME_API ScriptRegistry<ItemScript>;
+ template class AC_GAME_API ScriptRegistry<LootScript>;
+ template class AC_GAME_API ScriptRegistry<MailScript>;
++template class AC_GAME_API ScriptRegistry<MetricScript>;
+ template class AC_GAME_API ScriptRegistry<MiscScript>;
+ template class AC_GAME_API ScriptRegistry<MovementHandlerScript>;
+ template class AC_GAME_API ScriptRegistry<OutdoorPvPScript>;
+ template class AC_GAME_API ScriptRegistry<PetScript>;
+ template class AC_GAME_API ScriptRegistry<PlayerScript>;
++template class AC_GAME_API ScriptRegistry<PlayerbotScript>;
+ template class AC_GAME_API ScriptRegistry<ServerScript>;
+ template class AC_GAME_API ScriptRegistry<SpellSC>;
+ template class AC_GAME_API ScriptRegistry<SpellScriptLoader>;
+diff --git a/src/server/game/Scripting/ScriptMgr.h b/src/server/game/Scripting/ScriptMgr.h
+index a94922d7d..aaf96d697 100644
+--- a/src/server/game/Scripting/ScriptMgr.h
++++ b/src/server/game/Scripting/ScriptMgr.h
+@@ -190,6 +190,7 @@ public:
+      * @return True if you want to continue receive the packet, false if you want to disallow receive the packet
+      */
+     [[nodiscard]] virtual bool CanPacketReceive(WorldSession* /*session*/, WorldPacket& /*packet*/) { return true; }
++    virtual void OnPacketReceived(WorldSession* /*session*/, WorldPacket const& /*packet*/) { }
+ };
+ 
+ class WorldScript : public ScriptObject
+@@ -1027,6 +1028,7 @@ public:
+     // Called for player::update
+     virtual void OnBeforeUpdate(Player* /*player*/, uint32 /*p_time*/) { }
+     virtual void OnUpdate(Player* /*player*/, uint32 /*p_time*/) { }
++    virtual void OnAfterUpdate(Player* /*player*/, uint32 /*diff*/) {}
+ 
+     // Called when a player's money is modified (before the modification is done)
+     virtual void OnMoneyChanged(Player* /*player*/, int32& /*amount*/) { }
+@@ -1948,7 +1950,13 @@ public:
+ 
+     [[nodiscard]] bool IsDatabaseBound() const override { return false; }
+ 
++    [[nodiscard]] virtual bool OnDatabasesLoading() { return true; }
+     virtual void OnAfterDatabasesLoaded(uint32 /*updateFlags*/) { }
++    virtual void OnDatabasesKeepAlive() { }
++    virtual void OnDatabasesClosing() { }
++    virtual void OnDatabaseWarnAboutSyncQueries(bool /*apply*/) { }
++    virtual void OnDatabaseSelectIndexLogout(Player* /*player*/, uint32& /*statementIndex*/, uint32& /*statementParam*/) { }
++    virtual void OnDatabaseGetDBRevision(std::string& /*revision*/) { }
+ };
+ 
+ class WorldObjectScript : public ScriptObject
+@@ -2037,6 +2045,37 @@ public:
+     [[nodiscard]] virtual bool CanAreaTrigger(Player* /*player*/, AreaTrigger const* /*trigger*/) { return false; }
+ };
+ 
++class MetricScript : public ScriptObject
++{
++protected:
++    MetricScript(const char* name);
++
++public:
++    bool IsDatabaseBound() const { return false; }
++
++    virtual void OnMetricLogging() { }
++};
++
++class PlayerbotScript : public ScriptObject
++{
++protected:
++
++    PlayerbotScript(const char* name);
++
++public:
++    bool IsDatabaseBound() const { return false; }
++
++    [[nodiscard]] virtual bool OnPlayerbotCheckLFGQueue(lfg::Lfg5Guids const& /*guidsList*/) { return true; }
++    virtual void OnPlayerbotCheckKillTask(Player* /*player*/, Unit* /*victim*/) { }
++    virtual void OnPlayerbotCheckPetitionAccount(Player* /*player*/, bool& /*found*/) { }
++    [[nodiscard]] virtual bool OnPlayerbotCheckUpdatesToSend(Player* /*player*/) { return true; }
++    virtual void OnPlayerbotPacketSent(Player* /*player*/, WorldPacket const* /*packet*/) { }
++    virtual void OnPlayerbotUpdate(uint32 /*diff*/) { }
++    virtual void OnPlayerbotUpdateSessions(Player* /*player*/) { }
++    virtual void OnPlayerbotLogout(Player* /*player*/) { }
++    virtual void OnPlayerbotLogoutBots() { }
++};
++
+ // Manages registration, loading, and execution of scripts.
+ class ScriptMgr
+ {
+@@ -2089,6 +2128,7 @@ public: /* ServerScript */
+     void OnSocketOpen(std::shared_ptr<WorldSocket> socket);
+     void OnSocketClose(std::shared_ptr<WorldSocket> socket);
+     bool CanPacketReceive(WorldSession* session, WorldPacket const& packet);
++    void OnPacketReceived(WorldSession* session, WorldPacket const& packet);
+     bool CanPacketSend(WorldSession* session, WorldPacket const& packet);
+ 
+ public: /* WorldScript */
+@@ -2225,6 +2265,7 @@ public: /* AchievementCriteriaScript */
+ public: /* PlayerScript */
+     void OnBeforePlayerUpdate(Player* player, uint32 p_time);
+     void OnPlayerUpdate(Player* player, uint32 p_time);
++    void OnAfterPlayerUpdate(Player* player, uint32 diff);
+     void OnSendInitialPacketsBeforeAddToMap(Player* player, WorldPacket& data);
+     void OnPlayerReleasedGhost(Player* player);
+     void OnPVPKill(Player* killer, Player* killed);
+@@ -2582,7 +2623,13 @@ public: /* CommandSC */
+ 
+ public: /* DatabaseScript */
+ 
++    bool OnDatabasesLoading();
+     void OnAfterDatabasesLoaded(uint32 updateFlags);
++    void OnDatabasesKeepAlive();
++    void OnDatabasesClosing();
++    void OnDatabaseWarnAboutSyncQueries(bool apply);
++    void OnDatabaseSelectIndexLogout(Player* player, uint32& statementIndex, uint32& statementParam);
++    void OnDatabaseGetDBRevision(std::string& revision);
+ 
+ public: /* WorldObjectScript */
+ 
+@@ -2600,6 +2647,21 @@ public: /* LootScript */
+ 
+     void OnLootMoney(Player* player, uint32 gold);
+ 
++public: /* MetricScript */
++
++    void OnMetricLogging();
++
++public: /* PlayerbotScript */
++    bool OnPlayerbotCheckLFGQueue(lfg::Lfg5Guids const& guidsList);
++    void OnPlayerbotCheckKillTask(Player* player, Unit* victim);
++    void OnPlayerbotCheckPetitionAccount(Player* player, bool& found);
++    bool OnPlayerbotCheckUpdatesToSend(Player* player);
++    void OnPlayerbotPacketSent(Player* player, WorldPacket const* packet);
++    void OnPlayerbotUpdate(uint32 diff);
++    void OnPlayerbotUpdateSessions(Player* player);
++    void OnPlayerbotLogout(Player* player);
++    void OnPlayerbotLogoutBots();
++
+ private:
+     uint32 _scriptCount;
+ 
+diff --git a/src/server/game/Server/WorldSession.cpp b/src/server/game/Server/WorldSession.cpp
+index 90efea5ff..10fa83fe2 100644
+--- a/src/server/game/Server/WorldSession.cpp
++++ b/src/server/game/Server/WorldSession.cpp
+@@ -102,7 +102,7 @@ bool WorldSessionFilter::Process(WorldPacket* packet)
+ 
+ /// WorldSession constructor
+ WorldSession::WorldSession(uint32 id, std::string&& name, std::shared_ptr<WorldSocket> sock, AccountTypes sec, uint8 expansion,
+-    time_t mute_time, LocaleConstant locale, uint32 recruiter, bool isARecruiter, bool skipQueue, uint32 TotalTime) :
++    time_t mute_time, LocaleConstant locale, uint32 recruiter, bool isARecruiter, bool skipQueue, uint32 TotalTime, bool isBot) :
+     m_muteTime(mute_time),
+     m_timeOutTime(0),
+     _lastAuctionListItemsMSTime(0),
+@@ -133,7 +133,8 @@ WorldSession::WorldSession(uint32 id, std::string&& name, std::shared_ptr<WorldS
+     _addonMessageReceiveCount(0),
+     _timeSyncClockDeltaQueue(6),
+     _timeSyncClockDelta(0),
+-    _pendingTimeSyncRequests()
++    _pendingTimeSyncRequests(),
++    _isBot(isBot)
+ {
+     memset(m_Tutorials, 0, sizeof(m_Tutorials));
+ 
+@@ -150,6 +151,10 @@ WorldSession::WorldSession(uint32 id, std::string&& name, std::shared_ptr<WorldS
+         ResetTimeOutTime(false);
+         LoginDatabase.Execute("UPDATE account SET online = 1 WHERE id = {};", GetAccountId()); // One-time query
+     }
++    else if (isBot)
++    {
++        m_Address = "bot";
++    }
+ }
+ 
+ /// WorldSession destructor
+@@ -213,6 +218,8 @@ void WorldSession::SendPacket(WorldPacket const* packet)
+         return;
+     }
+ 
++    sScriptMgr->OnPlayerbotPacketSent(GetPlayer(), packet);
++
+     if (!m_Socket)
+         return;
+ 
+@@ -351,6 +358,8 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
+ 
+                     opHandle->Call(this, *packet);
+                     LogUnprocessedTail(packet);
++
++                    sScriptMgr->OnPacketReceived(this, *packet);
+                 }
+                 else
+                     processedPackets = MAX_PROCESSED_PACKETS_IN_SAME_WORLDSESSION_UPDATE;   // break out of packet processing loop
+@@ -365,6 +374,8 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
+ 
+                     opHandle->Call(this, *packet);
+                     LogUnprocessedTail(packet);
++
++                    sScriptMgr->OnPacketReceived(this, *packet);
+                 }
+                 else
+                     processedPackets = MAX_PROCESSED_PACKETS_IN_SAME_WORLDSESSION_UPDATE;   // break out of packet processing loop
+@@ -382,6 +393,8 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
+ 
+                     opHandle->Call(this, *packet);
+                     LogUnprocessedTail(packet);
++
++                    sScriptMgr->OnPacketReceived(this, *packet);
+                 }
+                 else
+                     processedPackets = MAX_PROCESSED_PACKETS_IN_SAME_WORLDSESSION_UPDATE;   // break out of packet processing loop
+@@ -472,6 +485,8 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
+     //logout procedure should happen only in World::UpdateSessions() method!!!
+     if (updater.ProcessUnsafe())
+     {
++        sScriptMgr->OnPlayerbotUpdateSessions(GetPlayer());
++
+         if (m_Socket && m_Socket->IsOpen() && _warden)
+         {
+             _warden->Update(diff);
+@@ -561,6 +576,8 @@ void WorldSession::LogoutPlayer(bool save)
+         if (ObjectGuid lguid = _player->GetLootGUID())
+             DoLootRelease(lguid);
+ 
++        sScriptMgr->OnPlayerbotLogout(_player);
++
+         ///- If the player just died before logging out, make him appear as a ghost
+         //FIXME: logout must be delayed in case lost connection with client in time of combat
+         if (_player->GetDeathTimer())
+@@ -688,6 +705,10 @@ void WorldSession::LogoutPlayer(bool save)
+         LOG_INFO("entities.player", "Account: {} (IP: {}) Logout Character:[{}] ({}) Level: {}",
+             GetAccountId(), GetRemoteAddress(), _player->GetName(), _player->GetGUID().ToString(), _player->GetLevel());
+ 
++        uint32 statementIndex = CHAR_UPD_ACCOUNT_ONLINE;
++        uint32 statementParam = GetAccountId();
++        sScriptMgr->OnDatabaseSelectIndexLogout(_player, statementIndex, statementParam);
++
+         //! Remove the player from the world
+         // the player may not be in the world when logging out
+         // e.g if he got disconnected during a transfer to another map
+@@ -707,8 +728,8 @@ void WorldSession::LogoutPlayer(bool save)
+         LOG_DEBUG("network", "SESSION: Sent SMSG_LOGOUT_COMPLETE Message");
+ 
+         //! Since each account can only have one online character at any given time, ensure all characters for active account are marked as offline
+-        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_ACCOUNT_ONLINE);
+-        stmt->SetData(0, GetAccountId());
++        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CharacterDatabaseStatements(statementIndex));
++        stmt->SetData(0, statementParam);
+         CharacterDatabase.Execute(stmt);
+     }
+ 
+@@ -1696,3 +1717,8 @@ void WorldSession::InitializeSessionCallback(CharacterDatabaseQueryHolder const&
+     SendClientCacheVersion(clientCacheVersion);
+     SendTutorialsData();
+ }
++
++LockedQueue<WorldPacket*>& WorldSession::GetPacketQueue()
++{
++    return _recvQueue;
++}
+diff --git a/src/server/game/Server/WorldSession.h b/src/server/game/Server/WorldSession.h
+index 64ce0703f..bab7b06b8 100644
+--- a/src/server/game/Server/WorldSession.h
++++ b/src/server/game/Server/WorldSession.h
+@@ -30,6 +30,7 @@
+ #include "Common.h"
+ #include "DatabaseEnv.h"
+ #include "GossipDef.h"
++#include "QueryHolder.h"
+ #include "Packet.h"
+ #include "SharedDefines.h"
+ #include "World.h"
+@@ -40,7 +41,6 @@ class Creature;
+ class GameObject;
+ class InstanceSave;
+ class Item;
+-class LoginQueryHolder;
+ class LoadPetFromDBQueryHolder;
+ class Object;
+ class Pet;
+@@ -225,6 +225,20 @@ enum CharterTypes
+     ARENA_TEAM_CHARTER_5v5_TYPE                   = 5
+ };
+ 
++class LoginQueryHolder : public CharacterDatabaseQueryHolder
++{
++    private:
++        uint32 m_accountId;
++        ObjectGuid m_guid;
++
++    public:
++        LoginQueryHolder(uint32 accountId, ObjectGuid guid);
++
++        ObjectGuid GetGuid() const { return m_guid; }
++        uint32 GetAccountId() const { return m_accountId; }
++        bool Initialize();
++};
++
+ //class to deal with packet processing
+ //allows to determine if next packet is safe to be processed
+ class PacketFilter
+@@ -269,6 +283,11 @@ class CharacterCreateInfo
+     friend class WorldSession;
+     friend class Player;
+ 
++public:
++    CharacterCreateInfo(std::string const name = "", uint8 _race = 0, uint8 _class = 0, uint8 gender = 0, uint8 skin = 0, uint8 face = 0,
++        uint8 hairStyle = 0, uint8 hairColor = 0, uint8 facialHair = 0)
++        : Name(name), Race(_race), Class(_class), Gender(gender), Skin(skin), Face(face), HairStyle(hairStyle), HairColor(hairColor), FacialHair(facialHair) { }
++
+ protected:
+     /// User specified variables
+     std::string Name;
+@@ -329,7 +348,8 @@ struct PacketCounter
+ class WorldSession
+ {
+ public:
+-    WorldSession(uint32 id, std::string&& name, std::shared_ptr<WorldSocket> sock, AccountTypes sec, uint8 expansion, time_t mute_time, LocaleConstant locale, uint32 recruiter, bool isARecruiter, bool skipQueue, uint32 TotalTime);
++    WorldSession(uint32 id, std::string&& name, std::shared_ptr<WorldSocket> sock, AccountTypes sec, uint8 expansion, time_t mute_time, LocaleConstant locale,
++        uint32 recruiter, bool isARecruiter, bool skipQueue, uint32 TotalTime, bool isBot = false);
+     ~WorldSession();
+ 
+     bool PlayerLoading() const { return m_playerLoading; }
+@@ -530,6 +550,7 @@ public:
+     // Time Synchronisation
+     void ResetTimeSync();
+     void SendTimeSync();
++
+ public:                                                 // opcodes handlers
+     void Handle_NULL(WorldPacket& null);                // not used
+     void Handle_EarlyProccess(WorldPacket& recvPacket); // just mark packets processed in WorldSocket::OnRead
+@@ -1069,6 +1090,8 @@ public:                                                 // opcodes handlers
+     bool GetShouldSetOfflineInDB() const { return _shouldSetOfflineInDB; }
+     bool IsSocketClosed() const;
+ 
++    void SetAddress(std::string const& address) { m_Address = address; }
++
+     /*
+      * CALLBACKS
+      */
+@@ -1080,6 +1103,13 @@ public:                                                 // opcodes handlers
+     void InitializeSession();
+     void InitializeSessionCallback(CharacterDatabaseQueryHolder const& realmHolder, uint32 clientCacheVersion);
+ 
++    LockedQueue<WorldPacket*>& GetPacketQueue();
++
++    [[nodiscard]] bool IsBot() const
++    {
++        return _isBot;
++    }
++
+ private:
+     void ProcessQueryCallbacks();
+ 
+@@ -1190,6 +1220,8 @@ private:
+     uint32 _timeSyncNextCounter;
+     uint32 _timeSyncTimer;
+ 
++    bool _isBot;
++
+     WorldSession(WorldSession const& right) = delete;
+     WorldSession& operator=(WorldSession const& right) = delete;
+ };
+diff --git a/src/server/game/World/IWorld.h b/src/server/game/World/IWorld.h
+index cd7e2f369..3644902cc 100644
+--- a/src/server/game/World/IWorld.h
++++ b/src/server/game/World/IWorld.h
+@@ -596,6 +596,9 @@ public:
+     [[nodiscard]] virtual LocaleConstant GetAvailableDbcLocale(LocaleConstant locale) const = 0;
+     virtual void LoadDBVersion() = 0;
+     [[nodiscard]] virtual char const* GetDBVersion() const = 0;
++#ifdef MOD_PLAYERBOTS
++    [[nodiscard]] virtual char const* GetPlayerbotsDBRevision() const = 0;
++#endif
+     virtual void LoadAutobroadcasts() = 0;
+     virtual void UpdateAreaDependentAuras() = 0;
+     [[nodiscard]] virtual uint32 GetCleaningFlags() const = 0;
+@@ -604,6 +607,7 @@ public:
+     [[nodiscard]] virtual std::string const& GetRealmName() const = 0;
+     virtual void SetRealmName(std::string name) = 0;
+     virtual void RemoveOldCorpses() = 0;
++    virtual SQLQueryHolderCallback& AddQueryHolderCallback(SQLQueryHolderCallback&& callback) = 0;
+ };
+ 
+ #endif //AZEROTHCORE_IWORLD_H
+diff --git a/src/server/game/World/World.cpp b/src/server/game/World/World.cpp
+index 568cf32a9..a97e10ffb 100644
+--- a/src/server/game/World/World.cpp
++++ b/src/server/game/World/World.cpp
+@@ -66,6 +66,7 @@
+ #include "ObjectMgr.h"
+ #include "Opcodes.h"
+ #include "OutdoorPvPMgr.h"
++#include "QueryHolder.h"
+ #include "PetitionMgr.h"
+ #include "Player.h"
+ #include "PlayerDump.h"
+@@ -2340,6 +2341,8 @@ void World::Update(uint32 diff)
+         ResetGuildCap();
+     }
+ 
++    sScriptMgr->OnPlayerbotUpdate(diff);
++
+     // pussywizard:
+     // acquire mutex now, this is kind of waiting for listing thread to finish it's work (since it can't process next packet)
+     // so we don't have to do it in every packet that modifies auctions
+@@ -2492,6 +2495,7 @@ void World::Update(uint32 diff)
+         CharacterDatabase.KeepAlive();
+         LoginDatabase.KeepAlive();
+         WorldDatabase.KeepAlive();
++        sScriptMgr->OnDatabasesKeepAlive();
+     }
+ 
+     {
+@@ -2838,6 +2842,8 @@ void World::ShutdownServ(uint32 time, uint32 options, uint8 exitcode, const std:
+         ShutdownMsg(true, nullptr, reason);
+     }
+ 
++    sScriptMgr->OnPlayerbotLogoutBots();
++
+     sScriptMgr->OnShutdownInitiate(ShutdownExitCode(exitcode), ShutdownMask(options));
+ }
+ 
+@@ -3354,6 +3360,12 @@ uint64 World::getWorldState(uint32 index) const
+ void World::ProcessQueryCallbacks()
+ {
+     _queryProcessor.ProcessReadyCallbacks();
++    _queryHolderProcessor.ProcessReadyCallbacks();
++}
++
++SQLQueryHolderCallback& World::AddQueryHolderCallback(SQLQueryHolderCallback&& callback)
++{
++    return _queryHolderProcessor.AddCallback(std::move(callback));
+ }
+ 
+ void World::RemoveOldCorpses()
+diff --git a/src/server/game/World/World.h b/src/server/game/World/World.h
+index 20ce7f137..1b133203c 100644
+--- a/src/server/game/World/World.h
++++ b/src/server/game/World/World.h
+@@ -340,6 +340,9 @@ public:
+     // used World DB version
+     void LoadDBVersion() override;
+     [[nodiscard]] char const* GetDBVersion() const override { return _dbVersion.c_str(); }
++#ifdef MOD_PLAYERBOTS
++    [[nodiscard]] char const* GetPlayerbotsDBRevision() const override { return m_PlayerbotsDBRevision.c_str(); }
++#endif
+ 
+     void LoadAutobroadcasts() override;
+ 
+@@ -371,6 +374,9 @@ protected:
+     void ResetRandomBG();
+     void CalendarDeleteOldEvents();
+     void ResetGuildCap();
++
++    SQLQueryHolderCallback& AddQueryHolderCallback(SQLQueryHolderCallback&& callback) override;
++
+ private:
+     static std::atomic_long _stopEvent;
+     static uint8 _exitCode;
+@@ -436,6 +442,9 @@ private:
+ 
+     // used versions
+     std::string _dbVersion;
++#ifdef MOD_PLAYERBOTS
++    std::string m_PlayerbotsDBRevision;
++#endif
+ 
+     typedef std::map<uint8, std::string> AutobroadcastsMap;
+     AutobroadcastsMap _autobroadcasts;
+@@ -445,6 +454,7 @@ private:
+ 
+     void ProcessQueryCallbacks();
+     QueryCallbackProcessor _queryProcessor;
++    AsyncCallbackProcessor<SQLQueryHolderCallback> _queryHolderProcessor;
+ 
+     /**
+      * @brief Executed when a World Session is being finalized. Be it from a normal login or via queue popping.
+diff --git a/src/server/scripts/Commands/cs_npc.cpp b/src/server/scripts/Commands/cs_npc.cpp
+index 7813f5e42..7a1d0ccf2 100644
+--- a/src/server/scripts/Commands/cs_npc.cpp
++++ b/src/server/scripts/Commands/cs_npc.cpp
+@@ -225,6 +225,7 @@ public:
+             {
+                 ObjectGuid::LowType guid = sObjectMgr->GenerateCreatureSpawnId();
+                 CreatureData& data = sObjectMgr->NewOrExistCreatureData(guid);
++                data.spawnId = guid;
+                 data.id1 = id;
+                 data.phaseMask = chr->GetPhaseMaskForSpawn();
+                 data.posX = chr->GetTransOffsetX();
+diff --git a/src/server/scripts/Commands/cs_server.cpp b/src/server/scripts/Commands/cs_server.cpp
+index 63c65caab..69536e1a7 100644
+--- a/src/server/scripts/Commands/cs_server.cpp
++++ b/src/server/scripts/Commands/cs_server.cpp
+@@ -213,11 +213,22 @@ public:
+         handler->PSendSysMessage("Using %s DBC Locale as default. All available DBC locales: %s", localeNames[defaultLocale], availableLocales.c_str());
+ 
+         handler->PSendSysMessage("Using World DB: %s", sWorld->GetDBVersion());
++#ifdef MOD_PLAYERBOTS
++        handler->PSendSysMessage("Using Playerbots DB Revision: %s", sWorld->GetPlayerbotsDBRevision());
++#endif
+ 
+         handler->PSendSysMessage("LoginDatabase queue size: %zu", LoginDatabase.QueueSize());
+         handler->PSendSysMessage("CharacterDatabase queue size: %zu", CharacterDatabase.QueueSize());
+         handler->PSendSysMessage("WorldDatabase queue size: %zu", WorldDatabase.QueueSize());
+ 
++        if (Acore::Module::GetEnableModulesList().empty())
++            handler->SendSysMessage("No modules enabled");
++        else
++            handler->SendSysMessage("> List enable modules:");
++#ifdef MOD_PLAYERBOTS
++        handler->PSendSysMessage("PlayerbotsDatabase queue size: %zu", PlayerbotsDatabase.QueueSize());
++#endif
++
+         if (Acore::Module::GetEnableModulesList().empty())
+             handler->SendSysMessage("No modules enabled");
+         else
+diff --git a/src/server/shared/DataStores/DBCEnums.h b/src/server/shared/DataStores/DBCEnums.h
+index c9ea4a632..60eae27c9 100644
+--- a/src/server/shared/DataStores/DBCEnums.h
++++ b/src/server/shared/DataStores/DBCEnums.h
+@@ -48,7 +48,7 @@ struct DBCPosition3D
+ // also see MAX_LEVEL and GT_MAX_LEVEL define
+ #define STRONG_MAX_LEVEL 255
+ 
+-enum BattlegroundBracketId                                  // bracketId for level ranges
++enum BattlegroundBracketId          // bracketId for level ranges
+ {
+     BG_BRACKET_ID_FIRST          = 0,
+     BG_BRACKET_ID_LAST           = 15
+diff --git a/src/server/shared/DataStores/DBCStructure.h b/src/server/shared/DataStores/DBCStructure.h
+index 025284204..525a0293a 100644
+--- a/src/server/shared/DataStores/DBCStructure.h
++++ b/src/server/shared/DataStores/DBCStructure.h
+@@ -628,6 +628,33 @@ struct CharStartOutfitEntry
+     //int32 ItemInventorySlot[MAX_OUTFIT_ITEMS];            // 53-76 not required at server side
+ };
+ 
++enum CharSectionFlags
++{
++	SECTION_FLAG_PLAYER         = 0x01,
++	SECTION_FLAG_DEATH_KNIGHT   = 0x04
++};
++
++enum CharSectionType
++{
++	SECTION_TYPE_SKIN           = 0,
++	SECTION_TYPE_FACE           = 1,
++	SECTION_TYPE_FACIAL_HAIR    = 2,
++	SECTION_TYPE_HAIR           = 3,
++	SECTION_TYPE_UNDERWEAR      = 4
++};
++
++struct CharSectionsEntry
++{
++	//uint32 Id;
++	uint32 Race;
++	uint32 Gender;
++	uint32 GenType;
++	//char* TexturePath[3];
++	uint32 Flags;
++	uint32 Type;
++	uint32 Color;
++};
++
+ struct CharTitlesEntry
+ {
+     uint32  ID;                                             // 0, title ids, for example in Quest::GetCharTitleId()
+@@ -894,6 +921,15 @@ struct EmotesTextEntry
+     uint32  textid;
+ };
+ 
++struct EmotesTextSoundEntry
++{
++	uint32 Id;                                              // 0
++	uint32 EmotesTextId;                                    // 1
++	uint32 RaceId;                                          // 2
++	uint32 SexId;                                           // 3, 0 male / 1 female
++	uint32 SoundId;                                         // 4
++};
++
+ struct FactionEntry
+ {
+     uint32      ID;                                         // 0        m_ID
+diff --git a/src/server/shared/DataStores/DBCfmt.h b/src/server/shared/DataStores/DBCfmt.h
+index dc8fefb35..a25dc698b 100644
+--- a/src/server/shared/DataStores/DBCfmt.h
++++ b/src/server/shared/DataStores/DBCfmt.h
+@@ -29,6 +29,7 @@ char constexpr BankBagSlotPricesEntryfmt[] = "ni";
+ char constexpr BarberShopStyleEntryfmt[] = "nixxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxiii";
+ char constexpr BattlemasterListEntryfmt[] = "niiiiiiiiixssssssssssssssssxiixx";
+ char constexpr CharStartOutfitEntryfmt[] = "dbbbXiiiiiiiiiiiiiiiiiiiiiiiixxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
++char constexpr CharSectionsEntryfmt[] = "diiixxxiii";
+ char constexpr CharTitlesEntryfmt[] = "nxssssssssssssssssxssssssssssssssssxi";
+ char constexpr ChatChannelsEntryfmt[] = "nixssssssssssssssssxxxxxxxxxxxxxxxxxx"; // ChatChannelsEntryfmt, index not used (more compact store)
+ char constexpr ChrClassesEntryfmt[] = "nxixssssssssssssssssxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxixii";
+@@ -48,6 +49,7 @@ char constexpr DurabilityCostsfmt[] = "niiiiiiiiiiiiiiiiiiiiiiiiiiiii";
+ char constexpr DurabilityQualityfmt[] = "nf";
+ char constexpr EmotesEntryfmt[] = "nxxiiix";
+ char constexpr EmotesTextEntryfmt[] = "nxixxxxxxxxxxxxxxxx";
++char constexpr EmotesTextSoundEntryfmt[] = "niiii";
+ char constexpr FactionEntryfmt[] = "niiiiiiiiiiiiiiiiiiffixssssssssssssssssxxxxxxxxxxxxxxxxxx";
+ char constexpr FactionTemplateEntryfmt[] = "niiiiiiiiiiiii";
+ char constexpr GameObjectArtKitfmt[] = "nxxxxxxx";
+diff --git a/src/server/shared/SharedDefines.h b/src/server/shared/SharedDefines.h
+index 3a5623d8a..a5bbf57ba 100644
+--- a/src/server/shared/SharedDefines.h
++++ b/src/server/shared/SharedDefines.h
+@@ -1339,7 +1339,7 @@ enum Mechanics : uint32
+     (1<<MECHANIC_SAPPED))
+ 
+ // Spell dispel type
+-enum DispelType
++enum DispelType : uint8
+ {
+     DISPEL_NONE         = 0,
+     DISPEL_MAGIC        = 1,
+@@ -1603,7 +1603,7 @@ enum GameObjectDestructibleState
+ };
+ 
+ // EmotesText.dbc
+-enum TextEmotes
++enum TextEmotes : uint32
+ {
+     TEXT_EMOTE_AGREE                = 1,
+     TEXT_EMOTE_AMAZE                = 2,
+@@ -3118,7 +3118,7 @@ enum WeatherType
+ #define MAX_WEATHER_TYPE 4
+ 
+ // EnumUtils: DESCRIBE THIS
+-enum ChatMsg
++enum ChatMsg : uint32
+ {
+     CHAT_MSG_ADDON                  = 0xFFFFFFFF,
+     CHAT_MSG_SYSTEM                 = 0x00,

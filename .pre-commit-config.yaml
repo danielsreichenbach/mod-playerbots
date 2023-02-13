@@ -1,0 +1,16 @@
+---
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks.git
+    rev: "v4.4.0"
+    hooks:
+      - id: check-merge-conflict
+      - id: check-executables-have-shebangs
+      - id: check-yaml
+      - id: check-xml
+      - id: end-of-file-fixer
+  - repo: https://github.com/compilerla/conventional-pre-commit.git
+    rev: "v2.1.1"
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        args: []

@@ -1,0 +1,24 @@
+; top-most EditorConfig file
+root = true
+
+; Unix-style newlines
+[*]
+charset = utf-8
+end_of_line = lf
+indent_size = 4
+indent_style = space
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.md]
+trim_trailing_whitespace = false
+
+[{Makefile,*.bash,*.sh}]
+indent_style = tab
+
+[*.{ps1,bat,cmd,inf}]
+indent_style = tab
+end_of_line = crlf
+
+[*.{json,toml,yml,yaml,xml}]
+indent_size = 2
