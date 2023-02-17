@@ -1370,7 +1370,7 @@ index 9a7e09f80..1799fe23d 100644
  
  void Player::UpdateMirrorTimers()
 diff --git a/src/server/game/Entities/Unit/Unit.cpp b/src/server/game/Entities/Unit/Unit.cpp
-index 9d1b0a377..7e90fc477 100644
+index 2c4cc920c..047fe937a 100644
 --- a/src/server/game/Entities/Unit/Unit.cpp
 +++ b/src/server/game/Entities/Unit/Unit.cpp
 @@ -10193,15 +10193,32 @@ ReputationRank Unit::GetFactionReactionTo(FactionTemplateEntry const* factionTem
@@ -2407,7 +2407,7 @@ index a94922d7d..aaf96d697 100644
      uint32 _scriptCount;
  
 diff --git a/src/server/game/Server/WorldSession.cpp b/src/server/game/Server/WorldSession.cpp
-index 90efea5ff..10fa83fe2 100644
+index 4381e2e03..ae6ef16da 100644
 --- a/src/server/game/Server/WorldSession.cpp
 +++ b/src/server/game/Server/WorldSession.cpp
 @@ -102,7 +102,7 @@ bool WorldSessionFilter::Process(WorldPacket* packet)
@@ -2419,7 +2419,7 @@ index 90efea5ff..10fa83fe2 100644
      m_muteTime(mute_time),
      m_timeOutTime(0),
      _lastAuctionListItemsMSTime(0),
-@@ -133,7 +133,8 @@ WorldSession::WorldSession(uint32 id, std::string&& name, std::shared_ptr<WorldS
+@@ -134,7 +134,8 @@ WorldSession::WorldSession(uint32 id, std::string&& name, std::shared_ptr<WorldS
      _addonMessageReceiveCount(0),
      _timeSyncClockDeltaQueue(6),
      _timeSyncClockDelta(0),
@@ -2429,7 +2429,7 @@ index 90efea5ff..10fa83fe2 100644
  {
      memset(m_Tutorials, 0, sizeof(m_Tutorials));
  
-@@ -150,6 +151,10 @@ WorldSession::WorldSession(uint32 id, std::string&& name, std::shared_ptr<WorldS
+@@ -151,6 +152,10 @@ WorldSession::WorldSession(uint32 id, std::string&& name, std::shared_ptr<WorldS
          ResetTimeOutTime(false);
          LoginDatabase.Execute("UPDATE account SET online = 1 WHERE id = {};", GetAccountId()); // One-time query
      }
@@ -2440,7 +2440,7 @@ index 90efea5ff..10fa83fe2 100644
  }
  
  /// WorldSession destructor
-@@ -213,6 +218,8 @@ void WorldSession::SendPacket(WorldPacket const* packet)
+@@ -214,6 +219,8 @@ void WorldSession::SendPacket(WorldPacket const* packet)
          return;
      }
  
@@ -2449,7 +2449,7 @@ index 90efea5ff..10fa83fe2 100644
      if (!m_Socket)
          return;
  
-@@ -351,6 +358,8 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
+@@ -372,6 +379,8 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
  
                      opHandle->Call(this, *packet);
                      LogUnprocessedTail(packet);
@@ -2458,7 +2458,7 @@ index 90efea5ff..10fa83fe2 100644
                  }
                  else
                      processedPackets = MAX_PROCESSED_PACKETS_IN_SAME_WORLDSESSION_UPDATE;   // break out of packet processing loop
-@@ -365,6 +374,8 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
+@@ -386,6 +395,8 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
  
                      opHandle->Call(this, *packet);
                      LogUnprocessedTail(packet);
@@ -2467,7 +2467,7 @@ index 90efea5ff..10fa83fe2 100644
                  }
                  else
                      processedPackets = MAX_PROCESSED_PACKETS_IN_SAME_WORLDSESSION_UPDATE;   // break out of packet processing loop
-@@ -382,6 +393,8 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
+@@ -408,6 +419,8 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
  
                      opHandle->Call(this, *packet);
                      LogUnprocessedTail(packet);
@@ -2476,7 +2476,7 @@ index 90efea5ff..10fa83fe2 100644
                  }
                  else
                      processedPackets = MAX_PROCESSED_PACKETS_IN_SAME_WORLDSESSION_UPDATE;   // break out of packet processing loop
-@@ -472,6 +485,8 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
+@@ -498,6 +511,8 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
      //logout procedure should happen only in World::UpdateSessions() method!!!
      if (updater.ProcessUnsafe())
      {
@@ -2485,7 +2485,7 @@ index 90efea5ff..10fa83fe2 100644
          if (m_Socket && m_Socket->IsOpen() && _warden)
          {
              _warden->Update(diff);
-@@ -561,6 +576,8 @@ void WorldSession::LogoutPlayer(bool save)
+@@ -587,6 +602,8 @@ void WorldSession::LogoutPlayer(bool save)
          if (ObjectGuid lguid = _player->GetLootGUID())
              DoLootRelease(lguid);
  
@@ -2494,7 +2494,7 @@ index 90efea5ff..10fa83fe2 100644
          ///- If the player just died before logging out, make him appear as a ghost
          //FIXME: logout must be delayed in case lost connection with client in time of combat
          if (_player->GetDeathTimer())
-@@ -688,6 +705,10 @@ void WorldSession::LogoutPlayer(bool save)
+@@ -714,6 +731,10 @@ void WorldSession::LogoutPlayer(bool save)
          LOG_INFO("entities.player", "Account: {} (IP: {}) Logout Character:[{}] ({}) Level: {}",
              GetAccountId(), GetRemoteAddress(), _player->GetName(), _player->GetGUID().ToString(), _player->GetLevel());
  
@@ -2505,7 +2505,7 @@ index 90efea5ff..10fa83fe2 100644
          //! Remove the player from the world
          // the player may not be in the world when logging out
          // e.g if he got disconnected during a transfer to another map
-@@ -707,8 +728,8 @@ void WorldSession::LogoutPlayer(bool save)
+@@ -733,8 +754,8 @@ void WorldSession::LogoutPlayer(bool save)
          LOG_DEBUG("network", "SESSION: Sent SMSG_LOGOUT_COMPLETE Message");
  
          //! Since each account can only have one online character at any given time, ensure all characters for active account are marked as offline
@@ -2516,7 +2516,7 @@ index 90efea5ff..10fa83fe2 100644
          CharacterDatabase.Execute(stmt);
      }
  
-@@ -1696,3 +1717,8 @@ void WorldSession::InitializeSessionCallback(CharacterDatabaseQueryHolder const&
+@@ -1725,3 +1746,8 @@ void WorldSession::InitializeSessionCallback(CharacterDatabaseQueryHolder const&
      SendClientCacheVersion(clientCacheVersion);
      SendTutorialsData();
  }
@@ -2526,7 +2526,7 @@ index 90efea5ff..10fa83fe2 100644
 +    return _recvQueue;
 +}
 diff --git a/src/server/game/Server/WorldSession.h b/src/server/game/Server/WorldSession.h
-index 64ce0703f..bab7b06b8 100644
+index e6b5de118..daa179a37 100644
 --- a/src/server/game/Server/WorldSession.h
 +++ b/src/server/game/Server/WorldSession.h
 @@ -30,6 +30,7 @@
@@ -2588,7 +2588,7 @@ index 64ce0703f..bab7b06b8 100644
      ~WorldSession();
  
      bool PlayerLoading() const { return m_playerLoading; }
-@@ -530,6 +550,7 @@ public:
+@@ -531,6 +551,7 @@ public:
      // Time Synchronisation
      void ResetTimeSync();
      void SendTimeSync();
@@ -2596,7 +2596,7 @@ index 64ce0703f..bab7b06b8 100644
  public:                                                 // opcodes handlers
      void Handle_NULL(WorldPacket& null);                // not used
      void Handle_EarlyProccess(WorldPacket& recvPacket); // just mark packets processed in WorldSocket::OnRead
-@@ -1069,6 +1090,8 @@ public:                                                 // opcodes handlers
+@@ -1070,6 +1091,8 @@ public:                                                 // opcodes handlers
      bool GetShouldSetOfflineInDB() const { return _shouldSetOfflineInDB; }
      bool IsSocketClosed() const;
  
@@ -2605,7 +2605,7 @@ index 64ce0703f..bab7b06b8 100644
      /*
       * CALLBACKS
       */
-@@ -1080,6 +1103,13 @@ public:                                                 // opcodes handlers
+@@ -1081,6 +1104,13 @@ public:                                                 // opcodes handlers
      void InitializeSession();
      void InitializeSessionCallback(CharacterDatabaseQueryHolder const& realmHolder, uint32 clientCacheVersion);
  
@@ -2619,7 +2619,7 @@ index 64ce0703f..bab7b06b8 100644
  private:
      void ProcessQueryCallbacks();
  
-@@ -1190,6 +1220,8 @@ private:
+@@ -1192,6 +1222,8 @@ private:
      uint32 _timeSyncNextCounter;
      uint32 _timeSyncTimer;
  
