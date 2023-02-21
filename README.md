@@ -9,7 +9,7 @@ date, in order to add functions which are needed to run PlayerBots.
 
 ## Last update
 
-- 2023-02-17: [1e4e663][commit]
+- 2023-02-21: [99f5fa7][commit]
 
 ## Support
 
@@ -25,4 +25,4 @@ If you have questions or found a bug, please check out the [issues][issues].
 [upstream]: https://github.com/ZhengPeiRu21/mod-playerbots
 [trinity-npc-bots]: https://github.com/trickerer/Trinity-Bots
 [AzerothCore]: https://github.com/AzerothCore
-[commit]: https://github.com/azerothcore/azerothcore-wotlk/commit/1e4e663a1a657389a59dda6d668741697bf02a17
+[commit]: https://github.com/azerothcore/azerothcore-wotlk/commit/99f5fa79aa1f9b4213306be0242afdd21507dba8

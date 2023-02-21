@@ -299,7 +299,7 @@ index 5a391e0cd..d36d8a13c 100644
 +template class AC_DATABASE_API DatabaseWorkerPool<PlayerbotsDatabaseConnection>;
 +#endif
 diff --git a/src/server/database/Database/Implementation/LoginDatabase.cpp b/src/server/database/Database/Implementation/LoginDatabase.cpp
-index 5a393a3cc..ddf59dad2 100644
+index 482430974..093890096 100644
 --- a/src/server/database/Database/Implementation/LoginDatabase.cpp
 +++ b/src/server/database/Database/Implementation/LoginDatabase.cpp
 @@ -75,6 +75,7 @@ void LoginDatabaseConnection::DoPrepareStatements()
@@ -320,7 +320,7 @@ index 5a393a3cc..ddf59dad2 100644
      PrepareStatement(LOGIN_DEL_OLD_LOGS, "DELETE FROM logs WHERE (time + ?) < ?", CONNECTION_ASYNC);
      PrepareStatement(LOGIN_DEL_ACCOUNT_ACCESS, "DELETE FROM account_access WHERE id = ?", CONNECTION_ASYNC);
 diff --git a/src/server/database/Database/Implementation/LoginDatabase.h b/src/server/database/Database/Implementation/LoginDatabase.h
-index 3a9bb4a82..5872eddca 100644
+index c7fb2be48..a3a2cc702 100644
 --- a/src/server/database/Database/Implementation/LoginDatabase.h
 +++ b/src/server/database/Database/Implementation/LoginDatabase.h
 @@ -59,6 +59,7 @@ enum LoginDatabaseStatements : uint32
@@ -2407,7 +2407,7 @@ index a94922d7d..aaf96d697 100644
      uint32 _scriptCount;
  
 diff --git a/src/server/game/Server/WorldSession.cpp b/src/server/game/Server/WorldSession.cpp
-index 4381e2e03..ae6ef16da 100644
+index 3aa618656..9ea6e3dd2 100644
 --- a/src/server/game/Server/WorldSession.cpp
 +++ b/src/server/game/Server/WorldSession.cpp
 @@ -102,7 +102,7 @@ bool WorldSessionFilter::Process(WorldPacket* packet)
@@ -2429,7 +2429,7 @@ index 4381e2e03..ae6ef16da 100644
  {
      memset(m_Tutorials, 0, sizeof(m_Tutorials));
  
-@@ -151,6 +152,10 @@ WorldSession::WorldSession(uint32 id, std::string&& name, std::shared_ptr<WorldS
+@@ -150,6 +151,10 @@ WorldSession::WorldSession(uint32 id, std::string&& name, std::shared_ptr<WorldS
          ResetTimeOutTime(false);
          LoginDatabase.Execute("UPDATE account SET online = 1 WHERE id = {};", GetAccountId()); // One-time query
      }
@@ -2440,7 +2440,7 @@ index 4381e2e03..ae6ef16da 100644
  }
  
  /// WorldSession destructor
-@@ -214,6 +219,8 @@ void WorldSession::SendPacket(WorldPacket const* packet)
+@@ -212,6 +217,8 @@ void WorldSession::SendPacket(WorldPacket const* packet)
          return;
      }
  
@@ -2449,7 +2449,7 @@ index 4381e2e03..ae6ef16da 100644
      if (!m_Socket)
          return;
  
-@@ -372,6 +379,8 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
+@@ -369,6 +376,8 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
  
                      opHandle->Call(this, *packet);
                      LogUnprocessedTail(packet);
@@ -2458,7 +2458,7 @@ index 4381e2e03..ae6ef16da 100644
                  }
                  else
                      processedPackets = MAX_PROCESSED_PACKETS_IN_SAME_WORLDSESSION_UPDATE;   // break out of packet processing loop
-@@ -386,6 +395,8 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
+@@ -383,6 +392,8 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
  
                      opHandle->Call(this, *packet);
                      LogUnprocessedTail(packet);
@@ -2467,7 +2467,7 @@ index 4381e2e03..ae6ef16da 100644
                  }
                  else
                      processedPackets = MAX_PROCESSED_PACKETS_IN_SAME_WORLDSESSION_UPDATE;   // break out of packet processing loop
-@@ -408,6 +419,8 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
+@@ -405,6 +416,8 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
  
                      opHandle->Call(this, *packet);
                      LogUnprocessedTail(packet);
@@ -2476,7 +2476,7 @@ index 4381e2e03..ae6ef16da 100644
                  }
                  else
                      processedPackets = MAX_PROCESSED_PACKETS_IN_SAME_WORLDSESSION_UPDATE;   // break out of packet processing loop
-@@ -498,6 +511,8 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
+@@ -495,6 +508,8 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
      //logout procedure should happen only in World::UpdateSessions() method!!!
      if (updater.ProcessUnsafe())
      {
@@ -2485,7 +2485,7 @@ index 4381e2e03..ae6ef16da 100644
          if (m_Socket && m_Socket->IsOpen() && _warden)
          {
              _warden->Update(diff);
-@@ -587,6 +602,8 @@ void WorldSession::LogoutPlayer(bool save)
+@@ -584,6 +599,8 @@ void WorldSession::LogoutPlayer(bool save)
          if (ObjectGuid lguid = _player->GetLootGUID())
              DoLootRelease(lguid);
  
@@ -2494,7 +2494,7 @@ index 4381e2e03..ae6ef16da 100644
          ///- If the player just died before logging out, make him appear as a ghost
          //FIXME: logout must be delayed in case lost connection with client in time of combat
          if (_player->GetDeathTimer())
-@@ -714,6 +731,10 @@ void WorldSession::LogoutPlayer(bool save)
+@@ -711,6 +728,10 @@ void WorldSession::LogoutPlayer(bool save)
          LOG_INFO("entities.player", "Account: {} (IP: {}) Logout Character:[{}] ({}) Level: {}",
              GetAccountId(), GetRemoteAddress(), _player->GetName(), _player->GetGUID().ToString(), _player->GetLevel());
  
@@ -2505,7 +2505,7 @@ index 4381e2e03..ae6ef16da 100644
          //! Remove the player from the world
          // the player may not be in the world when logging out
          // e.g if he got disconnected during a transfer to another map
-@@ -733,8 +754,8 @@ void WorldSession::LogoutPlayer(bool save)
+@@ -730,8 +751,8 @@ void WorldSession::LogoutPlayer(bool save)
          LOG_DEBUG("network", "SESSION: Sent SMSG_LOGOUT_COMPLETE Message");
  
          //! Since each account can only have one online character at any given time, ensure all characters for active account are marked as offline
@@ -2516,7 +2516,7 @@ index 4381e2e03..ae6ef16da 100644
          CharacterDatabase.Execute(stmt);
      }
  
-@@ -1725,3 +1746,8 @@ void WorldSession::InitializeSessionCallback(CharacterDatabaseQueryHolder const&
+@@ -1722,3 +1743,8 @@ void WorldSession::InitializeSessionCallback(CharacterDatabaseQueryHolder const&
      SendClientCacheVersion(clientCacheVersion);
      SendTutorialsData();
  }
@@ -2526,7 +2526,7 @@ index 4381e2e03..ae6ef16da 100644
 +    return _recvQueue;
 +}
 diff --git a/src/server/game/Server/WorldSession.h b/src/server/game/Server/WorldSession.h
-index e6b5de118..daa179a37 100644
+index 5035f40cf..feccb23a7 100644
 --- a/src/server/game/Server/WorldSession.h
 +++ b/src/server/game/Server/WorldSession.h
 @@ -30,6 +30,7 @@
@@ -2596,8 +2596,8 @@ index e6b5de118..daa179a37 100644
  public:                                                 // opcodes handlers
      void Handle_NULL(WorldPacket& null);                // not used
      void Handle_EarlyProccess(WorldPacket& recvPacket); // just mark packets processed in WorldSocket::OnRead
-@@ -1070,6 +1091,8 @@ public:                                                 // opcodes handlers
-     bool GetShouldSetOfflineInDB() const { return _shouldSetOfflineInDB; }
+@@ -1068,6 +1089,8 @@ public:                                                 // opcodes handlers
+     void SetKicked(bool val) { _kicked = val; }
      bool IsSocketClosed() const;
  
 +    void SetAddress(std::string const& address) { m_Address = address; }
@@ -2605,7 +2605,7 @@ index e6b5de118..daa179a37 100644
      /*
       * CALLBACKS
       */
-@@ -1081,6 +1104,13 @@ public:                                                 // opcodes handlers
+@@ -1079,6 +1102,13 @@ public:                                                 // opcodes handlers
      void InitializeSession();
      void InitializeSessionCallback(CharacterDatabaseQueryHolder const& realmHolder, uint32 clientCacheVersion);
  
@@ -2619,7 +2619,7 @@ index e6b5de118..daa179a37 100644
  private:
      void ProcessQueryCallbacks();
  
-@@ -1192,6 +1222,8 @@ private:
+@@ -1189,6 +1219,8 @@ private:
      uint32 _timeSyncNextCounter;
      uint32 _timeSyncTimer;
  
@@ -2629,20 +2629,20 @@ index e6b5de118..daa179a37 100644
      WorldSession& operator=(WorldSession const& right) = delete;
  };
 diff --git a/src/server/game/World/IWorld.h b/src/server/game/World/IWorld.h
-index cd7e2f369..3644902cc 100644
+index 6e340c515..237b23704 100644
 --- a/src/server/game/World/IWorld.h
 +++ b/src/server/game/World/IWorld.h
-@@ -596,6 +596,9 @@ public:
+@@ -595,6 +595,9 @@ public:
      [[nodiscard]] virtual LocaleConstant GetAvailableDbcLocale(LocaleConstant locale) const = 0;
      virtual void LoadDBVersion() = 0;
      [[nodiscard]] virtual char const* GetDBVersion() const = 0;
 +#ifdef MOD_PLAYERBOTS
 +    [[nodiscard]] virtual char const* GetPlayerbotsDBRevision() const = 0;
 +#endif
-     virtual void LoadAutobroadcasts() = 0;
+     virtual void LoadMotd() = 0;
      virtual void UpdateAreaDependentAuras() = 0;
      [[nodiscard]] virtual uint32 GetCleaningFlags() const = 0;
-@@ -604,6 +607,7 @@ public:
+@@ -603,6 +606,7 @@ public:
      [[nodiscard]] virtual std::string const& GetRealmName() const = 0;
      virtual void SetRealmName(std::string name) = 0;
      virtual void RemoveOldCorpses() = 0;
@@ -2651,10 +2651,10 @@ index cd7e2f369..3644902cc 100644
  
  #endif //AZEROTHCORE_IWORLD_H
 diff --git a/src/server/game/World/World.cpp b/src/server/game/World/World.cpp
-index 568cf32a9..a97e10ffb 100644
+index cbc2fb82d..464c8c32c 100644
 --- a/src/server/game/World/World.cpp
 +++ b/src/server/game/World/World.cpp
-@@ -66,6 +66,7 @@
+@@ -67,6 +67,7 @@
  #include "ObjectMgr.h"
  #include "Opcodes.h"
  #include "OutdoorPvPMgr.h"
@@ -2662,7 +2662,7 @@ index 568cf32a9..a97e10ffb 100644
  #include "PetitionMgr.h"
  #include "Player.h"
  #include "PlayerDump.h"
-@@ -2340,6 +2341,8 @@ void World::Update(uint32 diff)
+@@ -2338,6 +2339,8 @@ void World::Update(uint32 diff)
          ResetGuildCap();
      }
  
@@ -2671,7 +2671,7 @@ index 568cf32a9..a97e10ffb 100644
      // pussywizard:
      // acquire mutex now, this is kind of waiting for listing thread to finish it's work (since it can't process next packet)
      // so we don't have to do it in every packet that modifies auctions
-@@ -2492,6 +2495,7 @@ void World::Update(uint32 diff)
+@@ -2490,6 +2493,7 @@ void World::Update(uint32 diff)
          CharacterDatabase.KeepAlive();
          LoginDatabase.KeepAlive();
          WorldDatabase.KeepAlive();
@@ -2679,7 +2679,7 @@ index 568cf32a9..a97e10ffb 100644
      }
  
      {
-@@ -2838,6 +2842,8 @@ void World::ShutdownServ(uint32 time, uint32 options, uint8 exitcode, const std:
+@@ -2836,6 +2840,8 @@ void World::ShutdownServ(uint32 time, uint32 options, uint8 exitcode, const std:
          ShutdownMsg(true, nullptr, reason);
      }
  
@@ -2688,7 +2688,7 @@ index 568cf32a9..a97e10ffb 100644
      sScriptMgr->OnShutdownInitiate(ShutdownExitCode(exitcode), ShutdownMask(options));
  }
  
-@@ -3354,6 +3360,12 @@ uint64 World::getWorldState(uint32 index) const
+@@ -3285,6 +3291,12 @@ uint64 World::getWorldState(uint32 index) const
  void World::ProcessQueryCallbacks()
  {
      _queryProcessor.ProcessReadyCallbacks();
@@ -2702,10 +2702,10 @@ index 568cf32a9..a97e10ffb 100644
  
  void World::RemoveOldCorpses()
 diff --git a/src/server/game/World/World.h b/src/server/game/World/World.h
-index 20ce7f137..1b133203c 100644
+index bb1ec8b84..2c76c1145 100644
 --- a/src/server/game/World/World.h
 +++ b/src/server/game/World/World.h
-@@ -340,6 +340,9 @@ public:
+@@ -339,6 +339,9 @@ public:
      // used World DB version
      void LoadDBVersion() override;
      [[nodiscard]] char const* GetDBVersion() const override { return _dbVersion.c_str(); }
@@ -2713,9 +2713,9 @@ index 20ce7f137..1b133203c 100644
 +    [[nodiscard]] char const* GetPlayerbotsDBRevision() const override { return m_PlayerbotsDBRevision.c_str(); }
 +#endif
  
-     void LoadAutobroadcasts() override;
+     void LoadMotd() override;
  
-@@ -371,6 +374,9 @@ protected:
+@@ -370,6 +373,9 @@ protected:
      void ResetRandomBG();
      void CalendarDeleteOldEvents();
      void ResetGuildCap();
@@ -2725,17 +2725,13 @@ index 20ce7f137..1b133203c 100644
  private:
      static std::atomic_long _stopEvent;
      static uint8 _exitCode;
-@@ -436,6 +442,9 @@ private:
+@@ -435,9 +441,13 @@ private:
  
      // used versions
      std::string _dbVersion;
 +#ifdef MOD_PLAYERBOTS
 +    std::string m_PlayerbotsDBRevision;
 +#endif
- 
-     typedef std::map<uint8, std::string> AutobroadcastsMap;
-     AutobroadcastsMap _autobroadcasts;
-@@ -445,6 +454,7 @@ private:
  
      void ProcessQueryCallbacks();
      QueryCallbackProcessor _queryProcessor;
@@ -2756,7 +2752,7 @@ index 7813f5e42..7a1d0ccf2 100644
                  data.phaseMask = chr->GetPhaseMaskForSpawn();
                  data.posX = chr->GetTransOffsetX();
 diff --git a/src/server/scripts/Commands/cs_server.cpp b/src/server/scripts/Commands/cs_server.cpp
-index 63c65caab..69536e1a7 100644
+index 4c89715f7..2aa03c875 100644
 --- a/src/server/scripts/Commands/cs_server.cpp
 +++ b/src/server/scripts/Commands/cs_server.cpp
 @@ -213,11 +213,22 @@ public:
