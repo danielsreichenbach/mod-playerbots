@@ -1,3 +1,16 @@
+diff --git a/apps/docker/Dockerfile b/apps/docker/Dockerfile
+index a0b02e746..b0cb47e27 100644
+--- a/apps/docker/Dockerfile
++++ b/apps/docker/Dockerfile
+@@ -28,7 +28,7 @@ ENV DEBIAN_FRONTEND=noninteractive
+ # since it's not cacheable by docker
+ RUN apt-get update && apt-get install -y gdb gdbserver git dos2unix lsb-core sudo curl unzip \
+   make cmake clang libmysqlclient-dev \
+-  libboost-system1.7*-dev libboost-filesystem1.7*-dev libboost-program-options1.7*-dev libboost-iostreams1.7*-dev \
++  libboost-system1.7*-dev libboost-filesystem1.7*-dev libboost-program-options1.7*-dev libboost-iostreams1.7*-dev libboost-thread1.7*-dev \
+   build-essential libtool cmake-data openssl libgoogle-perftools-dev google-perftools \
+   libssl-dev libmysql++-dev libreadline6-dev zlib1g-dev libbz2-dev mysql-client \
+   libncurses5-dev ccache \
 diff --git a/deps/boost/CMakeLists.txt b/deps/boost/CMakeLists.txt
 index db4ef4ef5..3cf5d466b 100644
 --- a/deps/boost/CMakeLists.txt
@@ -276,7 +289,7 @@ index 44aaca199..094b13cf4 100644
      std::queue<Predicate> _open, _populate, _update, _prepare;
      std::stack<Closer> _close;
 diff --git a/src/server/database/Database/DatabaseWorkerPool.cpp b/src/server/database/Database/DatabaseWorkerPool.cpp
-index 5a391e0cd..d36d8a13c 100644
+index 4e0f466cf..22deebbf1 100644
 --- a/src/server/database/Database/DatabaseWorkerPool.cpp
 +++ b/src/server/database/Database/DatabaseWorkerPool.cpp
 @@ -39,6 +39,10 @@
@@ -290,7 +303,7 @@ index 5a391e0cd..d36d8a13c 100644
  #if MARIADB_VERSION_ID >= 100600
  #define MIN_MYSQL_SERVER_VERSION 100500u
  #define MIN_MYSQL_CLIENT_VERSION 30203u
-@@ -531,3 +535,7 @@ void DatabaseWorkerPool<T>::ExecuteOrAppend(SQLTransaction<T>& trans, PreparedSt
+@@ -533,3 +537,7 @@ void DatabaseWorkerPool<T>::ExecuteOrAppend(SQLTransaction<T>& trans, PreparedSt
  template class AC_DATABASE_API DatabaseWorkerPool<LoginDatabaseConnection>;
  template class AC_DATABASE_API DatabaseWorkerPool<WorldDatabaseConnection>;
  template class AC_DATABASE_API DatabaseWorkerPool<CharacterDatabaseConnection>;
@@ -771,7 +784,7 @@ index 97811954d..b7d856a72 100644
              Path const p(path);
              if (!is_directory(p))
 diff --git a/src/server/game/Battlegrounds/ArenaTeam.cpp b/src/server/game/Battlegrounds/ArenaTeam.cpp
-index 2d326dcd0..14ffa19d2 100644
+index c19f66833..90455f469 100644
 --- a/src/server/game/Battlegrounds/ArenaTeam.cpp
 +++ b/src/server/game/Battlegrounds/ArenaTeam.cpp
 @@ -1087,3 +1087,22 @@ std::unordered_map<uint8, uint8> ArenaTeam::ArenaReqPlayersForType =
@@ -1196,10 +1209,10 @@ index c8fea1191..68b9df231 100644
          proposal.cancelTime = GameTime::GetGameTime().count() + LFG_TIME_PROPOSAL;
          proposal.state = LFG_PROPOSAL_INITIATING;
 diff --git a/src/server/game/Entities/Creature/Creature.cpp b/src/server/game/Entities/Creature/Creature.cpp
-index 987191e96..0956a6dd9 100644
+index afbed2ee0..708a065d8 100644
 --- a/src/server/game/Entities/Creature/Creature.cpp
 +++ b/src/server/game/Entities/Creature/Creature.cpp
-@@ -1393,6 +1393,7 @@ void Creature::SaveToDB(uint32 mapid, uint8 spawnMask, uint32 phaseMask)
+@@ -1384,6 +1384,7 @@ void Creature::SaveToDB(uint32 mapid, uint8 spawnMask, uint32 phaseMask)
          m_spawnId = sObjectMgr->GenerateCreatureSpawnId();
  
      CreatureData& data = sObjectMgr->NewOrExistCreatureData(m_spawnId);
@@ -1207,7 +1220,7 @@ index 987191e96..0956a6dd9 100644
  
      uint32 displayId = GetNativeDisplayId();
      uint32 npcflag = GetNpcFlags();
-@@ -3538,7 +3539,7 @@ bool Creature::IsMovementPreventedByCasting() const
+@@ -3539,7 +3540,7 @@ bool Creature::IsMovementPreventedByCasting() const
  void Creature::SetCannotReachTarget(ObjectGuid const& cannotReach)
  {
      if (cannotReach == m_cannotReachTarget)
@@ -1229,7 +1242,7 @@ index fd4d3432b..5a3e3f4a8 100644
      uint32 id2{0};                                             // entry in creature_template
      uint32 id3{0};                                             // entry in creature_template
 diff --git a/src/server/game/Entities/GameObject/GameObject.cpp b/src/server/game/Entities/GameObject/GameObject.cpp
-index 7431b5050..9236fc594 100644
+index 1365834de..43262a38d 100644
 --- a/src/server/game/Entities/GameObject/GameObject.cpp
 +++ b/src/server/game/Entities/GameObject/GameObject.cpp
 @@ -1062,6 +1062,7 @@ void GameObject::SaveToDB(uint32 mapid, uint8 spawnMask, uint32 phaseMask, bool
@@ -1275,7 +1288,7 @@ index 30eb7860f..3165111d2 100644
      [[nodiscard]] bool HasStat(ItemModType stat) const;
      [[nodiscard]] bool HasSpellPowerStat() const;
 diff --git a/src/server/game/Entities/Player/Player.cpp b/src/server/game/Entities/Player/Player.cpp
-index d5c99078b..3f8648bf3 100644
+index ac26e58a8..e59b94013 100644
 --- a/src/server/game/Entities/Player/Player.cpp
 +++ b/src/server/game/Entities/Player/Player.cpp
 @@ -3232,7 +3232,9 @@ void Player::learnSpell(uint32 spellId, bool temporary /*= false*/, bool learnFr
@@ -1289,7 +1302,7 @@ index d5c99078b..3f8648bf3 100644
      }
  
 diff --git a/src/server/game/Entities/Player/Player.h b/src/server/game/Entities/Player/Player.h
-index 2951bb669..da056a5b8 100644
+index 4b5ecd818..73e2d7f3b 100644
 --- a/src/server/game/Entities/Player/Player.h
 +++ b/src/server/game/Entities/Player/Player.h
 @@ -670,7 +670,7 @@ enum PlayerSlots
@@ -1301,20 +1314,19 @@ index 2951bb669..da056a5b8 100644
  {
      EQUIPMENT_SLOT_START        = 0,
      EQUIPMENT_SLOT_HEAD         = 0,
-@@ -2575,6 +2575,8 @@ public:
-     [[nodiscard]] PlayerSetting GetPlayerSetting(std::string source, uint8 index);
+@@ -2576,6 +2576,7 @@ public:
      void UpdatePlayerSetting(std::string source, uint8 index, uint32 value);
  
+     void SendSystemMessage(std::string_view msg, bool escapeCharacters = false);
 +    void ResetSpeakTimers();
-+
+ 
      std::string GetDebugInfo() const override;
  
-  protected:
 diff --git a/src/server/game/Entities/Player/PlayerQuest.cpp b/src/server/game/Entities/Player/PlayerQuest.cpp
-index d4453d2ab..a4b5861c8 100644
+index a7793122e..238bced9e 100644
 --- a/src/server/game/Entities/Player/PlayerQuest.cpp
 +++ b/src/server/game/Entities/Player/PlayerQuest.cpp
-@@ -825,25 +825,29 @@ void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver,
+@@ -831,25 +831,29 @@ void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver,
      // cast spells after mark quest complete (some spells have quest completed state requirements in spell_area data)
      if (quest->GetRewSpellCast() > 0)
      {
@@ -1370,7 +1382,7 @@ index 9a7e09f80..1799fe23d 100644
  
  void Player::UpdateMirrorTimers()
 diff --git a/src/server/game/Entities/Unit/Unit.cpp b/src/server/game/Entities/Unit/Unit.cpp
-index 2c4cc920c..047fe937a 100644
+index f0905f83c..a875c64a0 100644
 --- a/src/server/game/Entities/Unit/Unit.cpp
 +++ b/src/server/game/Entities/Unit/Unit.cpp
 @@ -10193,15 +10193,32 @@ ReputationRank Unit::GetFactionReactionTo(FactionTemplateEntry const* factionTem
@@ -1406,7 +1418,7 @@ index 2c4cc920c..047fe937a 100644
      // neutral by default
      return REP_NEUTRAL;
  }
-@@ -18096,6 +18113,8 @@ void Unit::Kill(Unit* killer, Unit* victim, bool durabilityLoss, WeaponAttackTyp
+@@ -18121,6 +18138,8 @@ void Unit::Kill(Unit* killer, Unit* victim, bool durabilityLoss, WeaponAttackTyp
              }
          }
  
@@ -1415,7 +1427,7 @@ index 2c4cc920c..047fe937a 100644
          // Dungeon specific stuff, only applies to players killing creatures
          if (creature->GetInstanceId())
          {
-@@ -19054,11 +19073,23 @@ void Unit::SendPlaySpellVisual(uint32 id)
+@@ -19081,11 +19100,23 @@ void Unit::SendPlaySpellVisual(uint32 id)
      SendMessageToSet(&data, true);
  }
  
@@ -1439,7 +1451,7 @@ index 2c4cc920c..047fe937a 100644
      SendMessageToSet(&data, true);
  }
  
-@@ -21427,3 +21458,18 @@ std::string Unit::GetDebugInfo() const
+@@ -21466,3 +21497,18 @@ std::string Unit::GetDebugInfo() const
          << " Class: " << std::to_string(getClass());
      return sstr.str();
  }
@@ -1459,7 +1471,7 @@ index 2c4cc920c..047fe937a 100644
 +    return m_cannotReachTarget;
 +}
 diff --git a/src/server/game/Entities/Unit/Unit.h b/src/server/game/Entities/Unit/Unit.h
-index 6fa06c994..68fa2ade8 100644
+index 536d18dce..eb919a022 100644
 --- a/src/server/game/Entities/Unit/Unit.h
 +++ b/src/server/game/Entities/Unit/Unit.h
 @@ -1498,6 +1498,7 @@ public:
@@ -1502,7 +1514,7 @@ index 7b3991946..2385b5cf0 100644
  
  enum VehicleSpells
 diff --git a/src/server/game/Globals/ObjectMgr.h b/src/server/game/Globals/ObjectMgr.h
-index 28b13f10c..126385188 100644
+index 0e40a20b0..41bb5950f 100644
 --- a/src/server/game/Globals/ObjectMgr.h
 +++ b/src/server/game/Globals/ObjectMgr.h
 @@ -865,6 +865,7 @@ public:
@@ -1545,7 +1557,7 @@ index 5c387274e..cd949d3f5 100644
      void ResetMaxEnchantingLevel();
  
 diff --git a/src/server/game/Guilds/Guild.cpp b/src/server/game/Guilds/Guild.cpp
-index 849f75487..d17813508 100644
+index e04b70411..7799a36fc 100644
 --- a/src/server/game/Guilds/Guild.cpp
 +++ b/src/server/game/Guilds/Guild.cpp
 @@ -830,7 +830,7 @@ bool Guild::BankMoveItemData::HasStoreRights(MoveItemData* pOther) const
@@ -1903,7 +1915,7 @@ index 3d1af0d8b..dbb4120bc 100644
              }
              break;
 diff --git a/src/server/game/Handlers/PetitionsHandler.cpp b/src/server/game/Handlers/PetitionsHandler.cpp
-index e8cc33152..93e028069 100644
+index 0f159d1fe..50a29c1be 100644
 --- a/src/server/game/Handlers/PetitionsHandler.cpp
 +++ b/src/server/game/Handlers/PetitionsHandler.cpp
 @@ -477,6 +477,8 @@ void WorldSession::HandlePetitionSignOpcode(WorldPacket& recvData)
@@ -2407,7 +2419,7 @@ index a94922d7d..aaf96d697 100644
      uint32 _scriptCount;
  
 diff --git a/src/server/game/Server/WorldSession.cpp b/src/server/game/Server/WorldSession.cpp
-index 3aa618656..9ea6e3dd2 100644
+index e8a7a3a37..a07e9851a 100644
 --- a/src/server/game/Server/WorldSession.cpp
 +++ b/src/server/game/Server/WorldSession.cpp
 @@ -102,7 +102,7 @@ bool WorldSessionFilter::Process(WorldPacket* packet)
@@ -2516,7 +2528,7 @@ index 3aa618656..9ea6e3dd2 100644
          CharacterDatabase.Execute(stmt);
      }
  
-@@ -1722,3 +1743,8 @@ void WorldSession::InitializeSessionCallback(CharacterDatabaseQueryHolder const&
+@@ -1726,3 +1747,8 @@ void WorldSession::InitializeSessionCallback(CharacterDatabaseQueryHolder const&
      SendClientCacheVersion(clientCacheVersion);
      SendTutorialsData();
  }
@@ -2651,7 +2663,7 @@ index 6e340c515..237b23704 100644
  
  #endif //AZEROTHCORE_IWORLD_H
 diff --git a/src/server/game/World/World.cpp b/src/server/game/World/World.cpp
-index cbc2fb82d..464c8c32c 100644
+index 59936d0a2..5cf119292 100644
 --- a/src/server/game/World/World.cpp
 +++ b/src/server/game/World/World.cpp
 @@ -67,6 +67,7 @@
@@ -2662,7 +2674,7 @@ index cbc2fb82d..464c8c32c 100644
  #include "PetitionMgr.h"
  #include "Player.h"
  #include "PlayerDump.h"
-@@ -2338,6 +2339,8 @@ void World::Update(uint32 diff)
+@@ -2344,6 +2345,8 @@ void World::Update(uint32 diff)
          ResetGuildCap();
      }
  
@@ -2671,7 +2683,7 @@ index cbc2fb82d..464c8c32c 100644
      // pussywizard:
      // acquire mutex now, this is kind of waiting for listing thread to finish it's work (since it can't process next packet)
      // so we don't have to do it in every packet that modifies auctions
-@@ -2490,6 +2493,7 @@ void World::Update(uint32 diff)
+@@ -2496,6 +2499,7 @@ void World::Update(uint32 diff)
          CharacterDatabase.KeepAlive();
          LoginDatabase.KeepAlive();
          WorldDatabase.KeepAlive();
@@ -2679,7 +2691,7 @@ index cbc2fb82d..464c8c32c 100644
      }
  
      {
-@@ -2836,6 +2840,8 @@ void World::ShutdownServ(uint32 time, uint32 options, uint8 exitcode, const std:
+@@ -2842,6 +2846,8 @@ void World::ShutdownServ(uint32 time, uint32 options, uint8 exitcode, const std:
          ShutdownMsg(true, nullptr, reason);
      }
  
@@ -2688,7 +2700,7 @@ index cbc2fb82d..464c8c32c 100644
      sScriptMgr->OnShutdownInitiate(ShutdownExitCode(exitcode), ShutdownMask(options));
  }
  
-@@ -3285,6 +3291,12 @@ uint64 World::getWorldState(uint32 index) const
+@@ -3291,6 +3297,12 @@ uint64 World::getWorldState(uint32 index) const
  void World::ProcessQueryCallbacks()
  {
      _queryProcessor.ProcessReadyCallbacks();
